@@ -1,0 +1,2 @@
+# Solomander
+Python Trading engine
