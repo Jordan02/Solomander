@@ -113,8 +113,26 @@ print_console_handler.setFormatter(print_formatter)
 pront.addHandler(print_console_handler)
 
 
+def set_log_level(all=None, log_level=None, stamp_level=None, pront_level=None):
+    
+    if all is not None:
+        log.setLevel(all)
+        stamp.setLevel(all)
+        pront.setLevel(all)
+        return
+    
+    if log_level or all is not None:
+        log.setLevel(log_level)
+    if stamp_level is not None:
+        stamp.setLevel(stamp_level)
+    if pront_level is not None:
+        pront.setLevel(pront_level)
+
+
 if __name__ == '__main__':
     
+    set_log_level(log_level=49)
+
     log.debug("debug")
     log.info("info")
     log.warning("warning")
