@@ -6,11 +6,15 @@ from datetime import time
 try:
     from logger import log, stamp, pront
     from data import load_yfinance
+    from visuals import plot_timeblock, plot_timeband
 except ImportError:
-    from.logger import log, stamp, pront
-    from.data import load_yfinance
+    from .logger import log, stamp, pront
+    from .data import load_yfinance
+    from .visuals import plot_timeblock, plot_timeband 
 
-def vwap(df:pd.DataFrame, ax=None, start = "00:00", end = "23:59", mode="session", tz="UTC", color="#bdbdbd40"): 
+
+
+def vwap(df:pd.DataFrame, start = "00:00", end = "23:59", mode="session", tz="UTC"): 
 
     # local df copy
     df_timezone = df.index.tz # save orginal tz format
@@ -52,14 +56,9 @@ def vwap(df:pd.DataFrame, ax=None, start = "00:00", end = "23:59", mode="session
         vwap_series.loc[group.index] = vwap
 
     # returning and plotting data
-    df[f"vwap_{mode}"] = vwap_series.tz_convert(df_timezone) # revert time
+    return vwap_series.tz_convert(df_timezone) # revert time
 
-    if ax is None:
-        log.debug("No finplot ax provided. Series appended to df only.")
-    else:
-        fplt.plot(vwap_series.tz_convert(df_timezone), color=color, ax = ax)
-
-def timeband(df, ax = None, title="", start="9:30", end="16:00", tz="UTC", color="#bdbdbd40"):
+def timeband(df, start="9:30", end="16:00", tz="UTC"):
 
     """
     Highlights a time band (session) on a finplot chart and adds a boolean mask to the DataFrame.
@@ -101,17 +100,9 @@ def timeband(df, ax = None, title="", start="9:30", end="16:00", tz="UTC", color
     # add boolean series to df
     timeband_series = pd.Series(index=df_band.index, dtype='bool')
     timeband_series[:] = True
-    df[f"tband_{title}"] = timeband_series.tz_convert(df_timezone) # revert time
-
-    # if no axis provided, return just data
-    if ax is None:
-        log.debug("No fplt ax provided. Series appended to df only.")
-    else:
-        # group each band on
-        for day, group in df_band.groupby(df_band.index.date):
-            fplt.add_vertical_band(group.index[0], group.index[-1], color=color)
-
-def timeblock(df,  ax=None, start="9:30", end="16:00", tz="UTC", color="#2448e960", title=""):
+    return timeband_series.tz_convert(df_timezone) # revert time
+            
+def timeblock(df, start="9:30", end="16:00", tz="UTC"):
 
     # extracting time
     sa,sb = map(int, start.split(":"))
@@ -127,23 +118,17 @@ def timeblock(df,  ax=None, start="9:30", end="16:00", tz="UTC", color="#2448e96
     # add boolean series to df
     timeblock_series = pd.Series(index=df_sess.index, dtype='bool')
     timeblock_series[:] = True
-    df[f"tblock_{title}"] = timeblock_series.tz_convert(df_timezone) # revert time
+    return timeblock_series.tz_convert(df_timezone) # revert time
 
-    # if no axis provided, return
-    if ax is None:
-        log.debug("No axis provided for sessions highlighting.")
-        return df_sess.tz_convert(df_timezone) # revert
-    else:
-        # group by each day and add rectangle
-        for day, group in df_sess.groupby(df_sess.index.date):
-            fplt.add_rect((group.index[0], group['low'].min()), (group.index[-1], group['high'].max()), ax=ax, color=color)
-            fplt.add_text((group.index[0], group['low'].min()), title, color=color, ax=ax)
-    
-def sessions(df, ax=None):
+def sessions(df):
 
-    NY = timeblock(df, ax=ax, start="13:30", end="20:00", tz="UTC", color="#2448e94b", title="NY")
-    LDN = timeblock(df, ax=ax, start="7:30", end="15:30", tz="UTC", color="#e824244b", title="LDN")
-    TKY = timeblock(df, ax=ax, start="00:00", end="06:00", tz="UTC", color="#24e86955", title="TKY")
+    NY = timeblock(df, start="13:30", end="20:00", tz="UTC")
+    LDN = timeblock(df, start="7:30", end="15:30", tz="UTC")
+    TKY = timeblock(df, start="00:00", end="06:00", tz="UTC")
+
+    return {"NY": NY, "LDN": LDN, "TKY": TKY}
+
+
 
 
 if __name__ == "__main__":
@@ -154,10 +139,20 @@ if __name__ == "__main__":
     ax, ax2 = fplt.create_plot('MNQ Chart', rows=2)
     fplt.candlestick_ochl(df, ax=ax)
 
-    vwap(df, ax=ax, start="09:30", end="16:00", mode="daily", color="#219bec")
-    timeband(df, ax=ax, title="rth", tz="America/New_York", color="#bdbdbd26")
-    sessions(df, ax=ax)
-   
+    df['vwap'] = vwap(df, mode="daily")
+    df['time_block'] = timeblock(df, start="9:30", end="16:00", tz="America/New_York")
+    df['tb_NY'] = sessions(df)['NY']
+    df['tb_LDN'] = sessions(df)['LDN']       
+    df['tb_TKY'] = sessions(df)['TKY']
+    df['tband_rth'] = timeband(df)
+
+    fplt.plot(df['vwap'], ax=ax, color="#219bec", legend="VWAP")
+    plot_timeblock(df, 'time_block', ax=ax, color="#2448e960", title="RTH")
+    plot_timeblock(df, 'tb_NY', ax=ax, color="#d5e9245f", title="NY")
+    plot_timeblock(df, 'tb_LDN', ax=ax, color="#1333c55f", title="LDN")
+    plot_timeblock(df, 'tb_TKY', ax=ax, color="#df74af5f", title="TKY")
+    plot_timeband(df, 'tband_rth', ax=ax, color="#bdbdbd26", title="RTH")
+
     pront.info(df.head(100))
     pront.info(df['tband_rth'].sum())
     pront.info(len(df))

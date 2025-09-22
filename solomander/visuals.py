@@ -2,11 +2,11 @@ import finplot as fplt
 import pandas as pd
 
 try:
-    from .indicators import vwap, timeband
+
     from .logger import log, stamp, pront
     from .data import load_yfinance
 except ImportError:
-    from indicators import vwap, timeband
+    
     from logger import log, stamp, pront
     from data import load_yfinance
 
@@ -54,3 +54,19 @@ def plot_trades(tf: pd.DataFrame, cc: pd.DataFrame, df: pd.DataFrame, ax, boxes=
             fplt.add_rect((tf.loc[i,'entry_time'], tf.loc[i,'entry_price']), (tf.loc[i,'exit_time']+ time_step, tf.loc[i,'tp']), ax = ax, color="#74e4745f") 
             fplt.add_rect((tf.loc[i,'entry_time'], tf.loc[i,'entry_price']), (tf.loc[i,'exit_time']+ time_step, tf.loc[i,'sl']), ax = ax, color="#e481745f") 
 
+def plot_timeblock(df, column, ax, color="#2448e960", title=""):
+
+
+
+    df_sess = df.dropna(subset=[column])
+
+    for day, group in df_sess.groupby(df_sess.index.date):
+        fplt.add_rect((group.index[0], group['low'].min()), (group.index[-1], group['high'].max()), ax=ax, color=color)
+        fplt.add_text((group.index[0], group['low'].min()), title, color=color, ax=ax)
+
+def plot_timeband(df, column, ax, color="#bdbdbd40", title=""):
+
+    df_band = df.dropna(subset=[column])
+
+    for day, group in df_band.groupby(df_band.index.date):
+        fplt.add_vertical_band(group.index[0], group.index[-1], color=color)

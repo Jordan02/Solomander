@@ -7,15 +7,15 @@ import pandas as pd
 from typing import final
 
 try:
-    from .indicators import vwap, timeband
+    from .indicators import vwap, timeband, sessions
     from .logger import log, stamp, pront
     from .data import load_yfinance
-    from .visuals import plot_trades
+    from .visuals import plot_trades, plot_timeblock, plot_timeband
 except ImportError:
-    from indicators import vwap, timeband
+    from indicators import vwap, timeband, sessions
     from logger import log, stamp, pront
     from data import load_yfinance
-    from visuals import plot_trades
+    from visuals import plot_trades, plot_timeblock, plot_timeband
     
 
 class Strategy:
@@ -304,46 +304,51 @@ class Strategy:
 
 
 if __name__ == "__main__":
+
     pd.set_option("display.max_columns", None)
 
-    # == constants
+    # ==== CONSTANTS =====
 
     SMA_SLOW = 50
     SMA_FAST = 20
 
-    # == load data
+    # ==== DATA AND INDICATORS =====
     df = load_yfinance("MNQ=F", start="2025-08-16", end="2025-09-16", interval="5m")
-    ax, ax2 = fplt.create_plot('MNQ Chart', rows=2)
-    fplt.volume_ocv(df[['open', 'close', 'volume']], ax=ax2)
-    fplt.candlestick_ochl(df, ax = ax) 
-
-    # == indicators
 
     #help(talib.SMA)
     df['SMA_slow'] = ta.SMA(df, timeperiod=SMA_SLOW)
     df['SMA_fast'] = ta.SMA(df, timeperiod=SMA_FAST)
     df['crossover'] = pta.cross(df['SMA_fast'], df['SMA_slow'])
     df['crossunder'] = pta.cross(df['SMA_slow'], df['SMA_fast'])
+    df['NY'] = sessions(df)['NY']
+    df['vwap'] = vwap(df, mode="daily")
 
-
-    fplt.plot(df['SMA_slow'] , ax=ax, color="#ff6a00", legend=f"SMA {SMA_SLOW}")
-    fplt.plot(df['SMA_fast'] , ax=ax, color="#00ff6a", legend=f"SMA {SMA_FAST}")
-
-
-    #s.sessions(df, ax=ax)
-    vwap(df, ax=ax, mode='daily', color="#0c29cf")
-    timeband(df, ax=ax, title="rth", color="#a8a8a830")
-
-    # == strategy logic
+    # ==== STRATEGY EXECUTION =====
 
     st = Strategy(df)
     st.execute()
+
+
+    # ==== PLOTTING VISUALS =====
+
+    ax, ax2 = fplt.create_plot('MNQ Chart', rows=2)
+    fplt.volume_ocv(df[['open', 'close', 'volume']], ax=ax2)
+    fplt.candlestick_ochl(df, ax = ax) 
+
+    fplt.plot(df['SMA_slow'] , ax=ax, color="#ff6a00", legend=f"SMA {SMA_SLOW}")
+    fplt.plot(df['SMA_fast'] , ax=ax, color="#00ff6a", legend=f"SMA {SMA_FAST}")
+    fplt.plot(df['vwap'], ax=ax, color="#219bec", legend="VWAP")
+    
+    plot_timeband(df, 'NY', ax=ax, color="#a8a8a83d", title="NY")
+    plot_trades(tf=st.tf, cc=st.cc, df=df, ax=ax, boxes=False)
+   
+    fplt.show()
+
+    # ==== OUTPUTS =====
 
     print(st.tf['pnl'].sum())
     
     
 
-    plot_trades(tf=st.tf, cc=st.cc, df=df, ax=ax, boxes=False)
 
-    fplt.show()
 
