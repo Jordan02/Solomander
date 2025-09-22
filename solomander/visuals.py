@@ -1,0 +1,56 @@
+import finplot as fplt
+import pandas as pd
+
+try:
+    from .indicators import vwap, timeband
+    from .logger import log, stamp, pront
+    from .data import load_yfinance
+except ImportError:
+    from indicators import vwap, timeband
+    from logger import log, stamp, pront
+    from data import load_yfinance
+
+
+def plot_trades(tf: pd.DataFrame, cc: pd.DataFrame, df: pd.DataFrame, ax, boxes=True):
+
+    """ Plot trade on finplot ax from trade dataframe tf """
+    
+    if tf.empty:
+        log.debug("trade tf is empty, nothing to plot")
+        return
+    if ax is None:
+        log.debug("ax is None, cannot plot trade")
+        return
+
+    # candle time for visual offsets
+    time_step = df.index.to_series().diff().dropna().min()
+
+    # buy and sell markers
+    sell_markers = cc.loc[(cc['side']=='sell') & (cc['filled'] != 0), ['entry_time','price']].set_index('entry_time')
+    buy_markers  = cc.loc[(cc['side']=='buy')  & (cc['filled'] != 0), ['entry_time','price']].set_index('entry_time')
+    #print(buy_markers)
+    #print(sell_markers)
+
+    fplt.plot(buy_markers, ax=ax, color="#028bca", style="^", legend="buys")
+    fplt.plot(sell_markers, ax=ax, color="#d30ca8", style="v", legend="sells")
+
+    # for all completed trades (trade frame)
+    for i in tf.index:
+
+        _color = "#11cc00" if tf.loc[i, 'pnl'] > 0 else "#cc0000"
+        # trade line
+        fplt.add_line(( tf.loc[i,'entry_time'], tf.loc[i,'entry_price']), (tf.loc[i,'exit_time'], tf.loc[i,'exit_price']),
+                        ax = ax, 
+                        color=_color, 
+                        style="-",
+                        width=1) 
+
+        if boxes:
+            # SL and TP lines
+            #fplt.add_line((tf.loc[i,'entry_time'], tf.loc[i,'sl']), (tf.loc[i,'exit_time']+ time_step, tf.loc[i,'sl']), ax = ax, color="#ff0000")
+            #fplt.add_line((tf.loc[i,'entry_time'], tf.loc[i,'tp']), (tf.loc[i,'exit_time']+ time_step, tf.loc[i,'tp']), ax = ax, color="#15ff00")
+            
+            # SL and TP areas
+            fplt.add_rect((tf.loc[i,'entry_time'], tf.loc[i,'entry_price']), (tf.loc[i,'exit_time']+ time_step, tf.loc[i,'tp']), ax = ax, color="#74e4745f") 
+            fplt.add_rect((tf.loc[i,'entry_time'], tf.loc[i,'entry_price']), (tf.loc[i,'exit_time']+ time_step, tf.loc[i,'sl']), ax = ax, color="#e481745f") 
+
