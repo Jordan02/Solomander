@@ -3,6 +3,8 @@ import talib
 import talib.abstract as ta
 import pandas_ta as pta
 import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 
 from typing import final
 
@@ -10,52 +12,87 @@ try:
     from .indicators import vwap, timeband, sessions
     from .logger import log, stamp, pront
     from .data import load_yfinance
-    from .visuals import plot_trades, plot_timeblock, plot_timeband
+    from .analysis import max_drawdown
 except ImportError:
     from indicators import vwap, timeband, sessions
     from logger import log, stamp, pront
     from data import load_yfinance
-    from visuals import plot_trades, plot_timeblock, plot_timeband
+    from analysis import max_drawdown
     
 
 class Strategy:
     def __init__(self, df : pd.DataFrame):
         
         # panda dataframes
-        self.df = df                   # main dataframe (candles/indiciators)
-        self.tf = pd.DataFrame()       # trade dataframe
-        self.oo = pd.DataFrame()       # open orders dataframe
-        self.cc = pd.DataFrame()       # closed orders dataframe
+        self.df = df                     # main dataframe (candles/indiciators)
+        self.tf = pd.DataFrame()         # trade dataframe
+        self.oo = pd.DataFrame()         # open orders dataframe
+        self.cc = pd.DataFrame()         # closed orders dataframe
+        self.CUM_MARGIN = pd.DataFrame() # cumulative margin over time
+        self.CUM_PNL = pd.DataFrame()    # cumulative pnl sequence series
 
         # Python lists 
         # for dict navigiation, and faster processing (pandas is slow for this)
         self.orders_open =[]
         self.orders_closed =[]
         self.trades =[]
+        self.cum_margin = []
 
         # convert df to numpy arrays for faster processing. 
         self.data = {col: df[col].to_numpy().copy() for col in df.columns}
         self.data['datetime'] = df.index.to_numpy().copy() # Copy allows overriding of values
 
-        # signals and counters
-        self.ORDER_ID = 0
+        # Account info
+        self.STARTING_MARGIN = 10000.0      # starting margin
+        self.MARGIN = self.STARTING_MARGIN  # starting margin
 
+        # Market info
+        self.LEVERAGE = 1       # leverage
+        self.FEE = 1.74         # fee round trip per trade
+        self.SLIPPAGE = 0.0     # slippage per trade
+
+        # ==== DYNANIMC signals, Counters and metrics (will be updated during execution) ====
+        
+        self.ORDER_ID = 0
         self.TOTAL_ORDERS = 0
         self.OPEN_ORDERS = 0
         self.OPEN_LIMIT_ORDERS = 0
-
         self.TOTAL_TRADES = 0
         self.OPEN_TRADES = 0
+        
+        self.TOTAL_SHORTS = 0 #check
+        self.TOTAL_LONGS = 0 #check
+        self.WINS_SHORT = 0 #check
+        self.WINS_LONG = 0 #check
+        self.TOTAL_WINS = 0 #check
+        
+        # ==== STATIC Performance metrics (to be calculated at end of execution) ====
+        
+        self.WIN_RATE = 0.0 #check
+        self.WIN_RATE_LONG = 0.0 
+        self.WIN_RATE_SHORT = 0.0 
+        self.AVG_PROFIT = 0.0 #check
+        self.AVG_LOSS = 0.0 #check
+        self.TOTAL_PROFIT = 0.0 #check
+        self.TOTAL_LOSS = 0.0 #check
+
+        self.PAYOFF_RATIO = 0.0 #check
+        self.PROFIT_FACTOR = 0.0 #check
+        self.SHARPE_RATIO = 0.0 #check
+        self.SORTINO_RATIO = 0.0 #check
+        self.MAX_DRAWDOWN = 0.0 #check
+        self.PNL = 0.0 #check
+        self.PNL_MDD_RATIO = 0.0 #check
+
+
+
 
     def buy_condition(self, i):
         
-        
         # default strategy: crossover of 9 and 21 EMA
         # inherit and override this method for custom strategy
-        return self.OPEN_TRADES < 1
+        return 0
         
-        
-    
     def sell_condition(self, i):
         
         # default strategy: crossover of 9 and 21 EMA
@@ -63,6 +100,42 @@ class Strategy:
         #return self.data['crossunder'][i] > 0 and self.TOTAL_TRADES < 2
         return 0
 
+    def buy_action(self, i):
+        # default buy action
+        # inherit and override this method for custom strategy
+        self.bracket_order(i,'buy', 1, sl_pips=40, tp_pips=40, comments='default Buy')
+        return
+
+    def sell_action(self, i):
+        # default sell action
+        # inherit and override this method for custom strategy
+        self.bracket_order(i,'sell', 1, sl_pips=40, tp_pips=40, comments='default Sell')
+        return
+
+    @final
+    def print_metrics(self):
+
+        label_width = 15  # adjust so colons line up
+        
+        print("\n=== STRATEGY METRICS ===")
+        print(f"{'PNL:':<{label_width}} ${self.PNL:.2f}")
+        print(f"{'Total Trades:':<{label_width}} {self.TOTAL_TRADES}")
+        print(f"{'Total Longs:':<{label_width}} {self.TOTAL_LONGS}")
+        print(f"{'Total Shorts:':<{label_width}} {self.TOTAL_SHORTS}")
+        print(f"{'Win Rate Long:':<{label_width}} {self.WIN_RATE_LONG:.2f}%")
+        print(f"{'Win Rate Short:':<{label_width}} {self.WIN_RATE_SHORT:.2f}%")
+        print(f"{'Win Rate Total:':<{label_width}} {self.WIN_RATE:.2f}%")
+        print(f"{'Average Profit:':<{label_width}} ${self.AVG_PROFIT:.2f}")
+        print(f"{'Average Loss:':<{label_width}} ${self.AVG_LOSS:.2f}")
+        print(f"{'Max Drawdown:':<{label_width}} ${self.MAX_DRAWDOWN:.2f}")
+        print(f"{'PnL/MDD Ratio:':<{label_width}} {self.PNL_MDD_RATIO:.2f}")
+        print(f"{'Payoff Ratio:':<{label_width}} {self.PAYOFF_RATIO:.2f}")
+        print(f"{'Profit Factor:':<{label_width}} {self.PROFIT_FACTOR:.2f}")
+        print(f"{'Sharpe Ratio:':<{label_width}} {self.SHARPE_RATIO:.2f}")
+        print(f"{'Sortino Ratio:':<{label_width}} {self.SORTINO_RATIO:.2f}")
+        return
+
+    @final
     def raise_order(self, i, side, qty, price=None, type='market', comments=''):   
         
         # TODO account for slippage here.
@@ -85,6 +158,10 @@ class Strategy:
         self.TOTAL_TRADES +=1
         self.TOTAL_ORDERS +=1
 
+        if side == 'buy':
+            self.TOTAL_LONGS +=1
+        else:
+            self.TOTAL_SHORTS +=1
         return
     
     @final
@@ -154,33 +231,67 @@ class Strategy:
         
         self.TOTAL_TRADES +=1
         self.OPEN_TRADES +=1
+
+        if side == 'buy':
+            self.TOTAL_LONGS +=1
+        else:
+            self.TOTAL_SHORTS +=1
+        return
     
     @final
     def execute(self):
 
+        # Fixed Strategy loop:
         for i in range(len(self.df)):
 
             if self.buy_condition(i):
-
-
-                self.bracket_order(i,'buy', 1, sl_pips=40, tp_pips=40, comments='BBB')
-
+                
+                self.buy_action(i)
                 pass
 
             if self.sell_condition(i):
 
-                self.bracket_order(i,'sell', 1, sl_pips=40, tp_pips=40, comments='SSS')
+                self.sell_action(i)
                 pass
 
             self._check_market_sltp(i)
+            self.cum_margin.append(self.MARGIN)  # track margin over time
 
         # recreate pandas from vectors (in case vectors have changed)
         self.df = pd.DataFrame(self.data, index=self.data['datetime'])
         self.tf = pd.DataFrame(self.trades)
         self.oo = pd.DataFrame(self.orders_open)
         self.cc = pd.DataFrame(self.orders_closed)
+        self.CUM_MARGIN = pd.DataFrame({'datetime': self.data['datetime'], 'margin': self.cum_margin}).set_index('datetime')
+        self.CUM_PNL = self.tf[['pnl']].cumsum().rename(columns={'pnl':'cum_pnl'}).shift(1).fillna(0)
+        
+        # calculate performance metrics
+        profitable_trades = self.tf.loc[self.tf['pnl']>0]
+        losing_trades = self.tf.loc[self.tf['pnl']<0]
 
+        self.PNL = self.tf['pnl'].sum() if not self.tf['pnl'].empty else 0
+        self.WIN_RATE_LONG = (self.WINS_LONG / self.TOTAL_LONGS * 100) if self.TOTAL_LONGS >0 else 0
+        self.WIN_RATE_SHORT = (self.WINS_SHORT / self.TOTAL_SHORTS * 100) if self.TOTAL_SHORTS >0 else 0
+        self.WIN_RATE = (self.TOTAL_WINS / self.TOTAL_TRADES * 100) if self.TOTAL_TRADES >0 else 0
+        self.AVG_PROFIT = profitable_trades['pnl'].mean() if not profitable_trades['pnl'].empty else 0
+        self.AVG_LOSS = losing_trades['pnl'].mean() if not losing_trades['pnl'].empty else 0
+        self.TOTAL_PROFIT = profitable_trades['pnl'].sum() if not profitable_trades['pnl'].empty else 0
+        self.TOTAL_LOSS = losing_trades['pnl'].sum() if not losing_trades['pnl'].empty else 0
+        self.PAYOFF_RATIO = (self.AVG_PROFIT / abs(self.AVG_LOSS)) if self.AVG_LOSS !=0 else 0
+        self.MAX_DRAWDOWN = max_drawdown(self.tf['pnl']) if not self.tf['pnl'].empty else 0
+        self.PNL_MDD_RATIO = (self.PNL / abs(self.MAX_DRAWDOWN)) if self.MAX_DRAWDOWN !=0 else 0
 
+        self.PROFIT_FACTOR = (self.TOTAL_PROFIT / (self.TOTAL_LOSS*-1)) if self.TOTAL_LOSS !=0 else 0
+
+        self.SHARPE_RATIO = (
+                              self.tf['pnl'].mean() / self.tf['pnl'].std(ddof=1) * np.sqrt(252)
+                              if not self.tf['pnl'].empty and self.tf['pnl'].std(ddof=1) != 0 else 0
+                            )
+        self.SORTINO_RATIO = (
+                                self.tf['pnl'].mean() / losing_trades['pnl'].std(ddof=1) * np.sqrt(252)
+                                if not self.tf['pnl'].empty and not losing_trades['pnl'].empty and losing_trades['pnl'].std(ddof=1) != 0 else 0
+                             )
+ 
     # === STOP LOSS AND TAKE PROFIT CHECK FUNCTION ===
     def _check_market_sltp(self, i):
 
@@ -196,18 +307,20 @@ class Strategy:
 
             #retrieve side
             order_side = order['side']
+            qty = order['qty']
 
             ## ====== LONG/SHORT TP CONDITION ======
+            # = (exit price - entry price) * qty * leverage - fee * qty
             if order_side == "buy":
                 # buy: candle high >= tp tprice
                 tp_condition = self.data['high'][i] >= order_tp['price']
-                tp_pnl = order_tp['price'] - order['price']
-                sl_pnl = order_sl['price'] - order['price']
+                tp_pnl = (order_tp['price'] - order['price']) * qty*self.LEVERAGE - (self.FEE * qty)
+                sl_pnl = (order_sl['price'] - order['price']) * qty*self.LEVERAGE - (self.FEE * qty)
             else:
                 # sell: candle low <= tp price
                 tp_condition = self.data['low'][i] <= order_tp['price']
-                tp_pnl = order_tp['price'] - order['price'] *-1
-                sl_pnl = order_sl['price'] - order['price'] *-1
+                tp_pnl = (order['price'] - order_tp['price']) * qty*self.LEVERAGE - (self.FEE * qty)
+                sl_pnl = (order['price'] - order_sl['price']) * qty*self.LEVERAGE - (self.FEE * qty)
 
 
             ## ====== TL HIT ======
@@ -221,11 +334,12 @@ class Strategy:
                                         'entry_price': order['price'], 
                                         'exit_price': order_tp['price'], 
                                         'side': 'sell', 
-                                        'qty': 1, 
-                                        'filled': 1, 
+                                        'qty': qty, 
+                                        'filled': qty, 
                                         'sl': order_sl['price'], 
                                         'tp': order_tp['price'], 
-                                        'pnl':tp_pnl, 
+                                        'pnl':tp_pnl,
+                                        'fee':self.FEE * qty, 
                                         'comments': ''})
                 
                 # remove from open_orders
@@ -249,6 +363,16 @@ class Strategy:
                 self.OPEN_LIMIT_ORDERS -=2
                 self.OPEN_ORDERS -=1
                 self.OPEN_TRADES -=1
+                self.MARGIN += tp_pnl
+                
+                if order_side =='buy':
+                    self.WINS_LONG +=1
+                    self.TOTAL_WINS +=1
+                else: 
+                    self.WINS_SHORT +=1
+                    self.TOTAL_WINS +=1
+
+
                 continue
                 
             ## ====== LONG/SHORT SL CONDITION ======
@@ -270,11 +394,12 @@ class Strategy:
                                         'entry_price': order['price'], 
                                         'exit_price': order_sl['price'], 
                                         'side': 'sell', 
-                                        'qty': 1, 
-                                        'filled': 1, 
+                                        'qty': qty, 
+                                        'filled': qty, 
                                         'sl': order_sl['price'], 
                                         'tp': order_tp['price'], 
-                                        'pnl':sl_pnl, 
+                                        'pnl':sl_pnl,
+                                        'fee':self.FEE * qty,
                                         'comments': ''})
                         
                 #move remove from open_orders
@@ -299,6 +424,13 @@ class Strategy:
                 self.OPEN_LIMIT_ORDERS -=2
                 self.OPEN_ORDERS -=1
                 self.OPEN_TRADES -=1
+                self.MARGIN += sl_pnl
+
+                if order_side =='buy':
+                    pass
+                else: 
+                    pass
+
                 continue
 
 
@@ -311,6 +443,7 @@ if __name__ == "__main__":
 
     SMA_SLOW = 50
     SMA_FAST = 20
+    RR = 2
 
     # ==== DATA AND INDICATORS =====
     df = load_yfinance("MNQ=F", start="2025-08-16", end="2025-09-16", interval="5m")
@@ -325,28 +458,100 @@ if __name__ == "__main__":
 
     # ==== STRATEGY EXECUTION =====
 
-    st = Strategy(df)
+
+    class strat1(Strategy):
+
+        # ===== BUY LOGIC =====
+        def buy_condition(self, i):
+            
+            return self.data['crossover'][i] > 0 and self.OPEN_TRADES < 1
+
+        
+        def buy_action(self, i):
+            
+            pre_i = max(0, i-1)
+            rr = RR
+            sl = self.data['high'][pre_i] - self.data['low'][pre_i]
+            tp = sl * rr
+
+            self.bracket_order(i,'buy', 10, sl_pips=sl, tp_pips=tp, comments='BBB')
+            
+            return 
+        
+        # ===== SELL LOGIC =====
+        def sell_condition(self, i):
+            
+            return self.data['crossunder'][i] > 0 and self.OPEN_TRADES < 1
+        
+        def sell_action(self, i):
+        
+            pre_i = max(0, i-1)
+            rr = RR
+            sl = self.data['high'][pre_i] - self.data['low'][pre_i]
+            tp = sl * rr
+
+            self.bracket_order(i,'sell', 10, sl_pips=sl, tp_pips=tp, comments='SSS')
+            
+            return 
+    
+    
+    st = strat1(df)
+    st.FEE = 1.74
+    st.LEVERAGE = 2
+
     st.execute()
 
 
     # ==== PLOTTING VISUALS =====
 
+    
     ax, ax2 = fplt.create_plot('MNQ Chart', rows=2)
-    fplt.volume_ocv(df[['open', 'close', 'volume']], ax=ax2)
+    fplt.volume_ocv(df[['open', 'close', 'volume']], ax=ax.overlay())
     fplt.candlestick_ochl(df, ax = ax) 
+    #fplt.set_y_range(1.0, 1.2, ax=ax2)
+    #fplt.set_y_scale('log', ax=ax2)
+
+    pront.info(st.tf.head(20))
+
+    fplt.add_line((df.index[0], st.STARTING_MARGIN), (df.index[-1], st.STARTING_MARGIN), ax = ax2, color="#130000", style="--")
+    fplt.plot(st.CUM_MARGIN, ax=ax2, color="#ff6a00", legend="cumulative Pnl")
+
+    pront.info(st.CUM_PNL.head(20))
 
     fplt.plot(df['SMA_slow'] , ax=ax, color="#ff6a00", legend=f"SMA {SMA_SLOW}")
     fplt.plot(df['SMA_fast'] , ax=ax, color="#00ff6a", legend=f"SMA {SMA_FAST}")
     fplt.plot(df['vwap'], ax=ax, color="#219bec", legend="VWAP")
+
+
     
-    plot_timeband(df, 'NY', ax=ax, color="#a8a8a83d", title="NY")
-    plot_trades(tf=st.tf, cc=st.cc, df=df, ax=ax, boxes=False)
-   
-    fplt.show()
 
     # ==== OUTPUTS =====
 
+    cum_pnl = st.CUM_PNL['cum_pnl']
+
+
+    fig, ax = plt.subplots(figsize=(10,5))
+
+    # Plot dots
+    ax.plot(cum_pnl.index, cum_pnl.values, 'o', color="#ff6a00", markersize=4)
+    ax.plot(cum_pnl.index, cum_pnl.values, '--', color="#ff6a00", label="cumulative PnL")
+    ax.axhline(0, color="#130000", linestyle="--")
+
+    # Labels & legend
+    ax.set_title("Monte Carlo")
+    ax.set_xlabel("Trades")
+    ax.set_ylabel("PnL")
+    ax.legend()
+
+
+
+    fplt.show()
+    plt.show()
+
+
     print(st.tf['pnl'].sum())
+
+
     
     
 

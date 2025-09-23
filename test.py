@@ -1,181 +1,128 @@
 import solomander as s
-import pandas as pd
 from solomander.logger import log, stamp, pront
+from solomander.strategy import Strategy
+from matplotlib import pyplot as plt
+
+import pandas as pd
 import finplot as fplt
 import talib
 import talib.abstract as ta
 import pandas_ta as pta
 import numpy as np
 
-#pd.set_option("display.max_columns", None)
+pd.set_option("display.max_columns", None)
 
-# == constants
+# ==== CONSTANTS =====
 
 SMA_SLOW = 50
 SMA_FAST = 20
+RR = 2
+ATR_MULTIPLIER = 1.4
 
-# == load data
+# ==== DATA AND INDICATORS =====
 df = s.load_yfinance("MNQ=F", start="2025-08-16", end="2025-09-16", interval="5m")
-
-ax, ax2 = fplt.create_plot('MNQ Chart', rows=2)
-fplt.volume_ocv(df[['open', 'close', 'volume']], ax=ax2)
-fplt.candlestick_ochl(df, ax = ax) 
-
-# == indicators
+#df = s.load_yfinance("MNQ=F", start="2025-02-16", end="2025-09-16", interval="1h")
 
 #help(talib.SMA)
 df['SMA_slow'] = ta.SMA(df, timeperiod=SMA_SLOW)
 df['SMA_fast'] = ta.SMA(df, timeperiod=SMA_FAST)
 df['crossover'] = pta.cross(df['SMA_fast'], df['SMA_slow'])
+df['crossunder'] = pta.cross(df['SMA_slow'], df['SMA_fast'])
+df['NY'] = s.sessions(df)['NY']
+df['vwap'] = s.vwap(df, mode="daily")
+df['atr'] = ta.ATR(df, timeperiod=14)
 
+# ==== STRATEGY EXECUTION =====
+
+class strat1(Strategy):
+
+    # ===== BUY LOGIC =====
+    def buy_condition(self, i):
+        
+        time_cond = self.data['NY'][i] > 0 # in ny session    
+
+        return self.data['crossover'][i] > 0 and self.OPEN_TRADES < 3
+
+    def buy_action(self, i):
+        
+        pre_i = max(0, i)
+        rr = RR
+        #sl = self.data['high'][pre_i] - self.data['low'][pre_i]
+        sl = self.data['atr'][pre_i]*ATR_MULTIPLIER
+        tp = sl * rr
+
+        self.bracket_order(i,'buy', 1, sl_pips=sl, tp_pips=tp, comments='BBB')
+        
+        return 
+    
+    # ===== SELL LOGIC =====
+    def sell_condition(self, i):
+
+        time_cond = self.data['NY'][i] > 0 # in ny session  
+        return self.data['crossunder'][i] > 0 and self.OPEN_TRADES < 3
+    
+    def sell_action(self, i):
+    
+        pre_i = max(0, i)
+        rr = RR
+        sl = self.data['atr'][pre_i]*ATR_MULTIPLIER
+        tp = sl * rr
+
+        self.bracket_order(i,'sell', 1, sl_pips=sl, tp_pips=tp, comments='SSS')
+        
+        return 
+    
+    
+st = strat1(df)
+st.FEE = 1.74
+st.LEVERAGE = 2
+
+st.execute()
+
+# ==== PLOTTING VISUALS =====
+
+ax, ax3, ax2 = fplt.create_plot('MNQ Chart', rows=3)
+fplt.volume_ocv(df[['open', 'close', 'volume']], ax=ax.overlay())
+fplt.candlestick_ochl(df, ax = ax) 
+fplt.plot(df['atr'], ax=ax3, color="#00ff6a", legend="ATR")
+
+fplt.add_line((df.index[0], st.STARTING_MARGIN), (df.index[-1], st.STARTING_MARGIN), ax = ax2, color="#130000", style="--")
+fplt.plot(st.CUM_MARGIN, ax=ax2, color="#ff6a00", legend="cumulative Pnl")
 
 fplt.plot(df['SMA_slow'] , ax=ax, color="#ff6a00", legend=f"SMA {SMA_SLOW}")
 fplt.plot(df['SMA_fast'] , ax=ax, color="#00ff6a", legend=f"SMA {SMA_FAST}")
+fplt.plot(df['vwap'], ax=ax, color="#219bec", legend="VWAP")
 
-
-#s.sessions(df, ax=ax)
-s.vwap(df, ax=ax, mode='daily', color="#0c29cf")
-s.timeband(df, ax=ax, title="rth", color="#a8a8a830")
-
-# == strategy logic
-
-orders_open =[]
-orders_closed =[]
-trades =[]
-
-ORDERS = 0
-OPEN_LIMIT_ORDERS = 0
-OPEN_TRADES = 0
-ORDER_ID = 0
-SL = 10 # ticks
-TP = 20 # ticks
-
-## BEFORE LOOP CONVERT PANDAS DF TO NUMPY ARRAYS FOR FASTER AND EASIER PROCESSING ## also for order lists
-## copy allows orriding of np values, no copying gives readonly arrays
-data = {col: df[col].to_numpy().copy() for col in df.columns}
-data['datetime'] = df.index.to_numpy().copy()
-
-pront.info(data['datetime'][5])
-
-for i in range(len(df)):
+s.plot_timeband(df, 'NY', ax=ax, color="#a8a8a83d", title="NY")
+s.plot_trades(tf=st.tf, cc=st.cc, df=df, ax=ax, boxes=True)
+   
+pront.info(st.tf.head(20))
+pront.info(st.CUM_PNL.head(20))
     
-    if data['crossover'][i] > 0 and ORDERS <= 100/3: #buy condition
+# ==== OUTPUTS =====
 
-        # raise buy order, SL, TP
-        orders_open.append({'trade_id': ORDER_ID,'entry_time': data['datetime'][i], 'side': 'buy', 'price': data['open'][i], 'qty': 1, 'filled': 0,'type': 'market', 'comments': ''})
-        orders_open.append({'trade_id': ORDER_ID,'entry_time': data['datetime'][i], 'side': 'sell', 'price': data['open'][i] - 10, 'qty': 1,'filled': 0, 'type': 'sl', 'comments': ''})
-        orders_open.append({'trade_id': ORDER_ID,'entry_time': data['datetime'][i], 'side': 'sell', 'price': data['open'][i] + 60, 'qty': 1, 'filled': 0, 'type': 'tp', 'comments': ''})
-        
-        # fplt df buy signal
+cum_pnl = st.CUM_PNL['cum_pnl']
+pnl = st.tf['pnl']
 
-        ORDERS += 3
-        ORDER_ID += 1
-        OPEN_LIMIT_ORDERS +=2
-        OPEN_TRADES +=1
+max_dd = s.max_drawdown(pnl)
+pront.info(f"Max Drawdown: {max_dd}")
 
-    if 1: #sell condition 
+fig, ax = plt.subplots(figsize=(10,5))
 
-        if OPEN_LIMIT_ORDERS > 0:
+# Plot dots
+ax.plot(cum_pnl.index, cum_pnl.values, 'o', color="#ff6a00", markersize=4)
+ax.plot(cum_pnl.index, cum_pnl.values, '--', color="#ff6a00", label="cumulative PnL")
+ax.axhline(0, color="#130000", linestyle="--")
 
-            # for each open order
-            order_market = [o for o in orders_open if o['type'] == 'market']
+# Labels & legend
+ax.set_title("Monte Carlo")
+ax.set_xlabel("Trades")
+ax.set_ylabel("PnL")
+ax.legend()
 
-            for order in order_market:
-
-                trade_id = order['trade_id'] #retreive trade id VALUE
-                order_sl = next(o for o in orders_open if o['trade_id']==trade_id and o['type'] =='sl') # return List of sl orders for order id
-                order_tp = next(o for o in orders_open if o['trade_id']==trade_id and o['type'] =='tp') # return List of tp orders for order id
-                
-                ## ==== SL HIT ====
-                if data['high'][i] >= order_tp['price']: 
-
-                    # add trade order record
-                    pnl = order_tp['price'] - order['price']
-                    trades.append({ 'trade_id': trade_id,
-                                    'entry_time': order['entry_time'],
-                                    'exit_time': data['datetime'][i], 
-                                    'entry_price': order['price'], 
-                                    'exit_price': order_tp['price'], 
-                                    'side': 'sell', 
-                                    'qty': 1, 
-                                    'filled': 1, 
-                                    'sl': order_sl['price'], 
-                                    'tp': order_tp['price'], 
-                                    'pnl':pnl, 
-                                    'comments': ''})
-                    
-                    #move remove from open_orders
-                    orders_open.remove(order)
-                    orders_open.remove(order_sl)
-                    orders_open.remove(order_tp)
-
-                    # add to closed_orders
-                    order['filled'] = 1
-                    order_sl['comments'] = 'cancelled'
-                    order_tp['filled'] = 1
-                    orders_closed.append(order)
-                    orders_closed.append(order_sl)
-                    orders_closed.append(order_tp)
-
-                    # update signals and counters
-                    OPEN_LIMIT_ORDERS -=2
-                    OPEN_TRADES -=1
-                    continue
-                
-                ## ==== SL HIT ====
-                if data['low'][i] <= order_sl['price']:
-
-                    # add trade order record
-                    pnl = order['price'] - order_sl['price']
-                    trades.append({ 'trade_id': trade_id,
-                                    'entry_time': order['entry_time'],
-                                    'exit_time': data['datetime'][i], 
-                                    'entry_price': order['price'], 
-                                    'exit_price': order_sl['price'], 
-                                    'side': 'sell', 
-                                    'qty': 1, 
-                                    'filled': 1, 
-                                    'sl': order_sl['price'], 
-                                    'tp': order_tp['price'], 
-                                    'pnl':pnl, 
-                                    'comments': ''})
-                    
-                    #move remove from open_orders
-                    orders_open.remove(order)
-                    orders_open.remove(order_sl)
-                    orders_open.remove(order_tp)
-
-                    # add to closed_orders
-                    order['filled'] = 1
-                    order_tp['comments'] = 'cancelled'
-                    order_sl['filled'] = 1
-                    orders_closed.append(order)
-                    orders_closed.append(order_sl)
-                    orders_closed.append(order_tp)
-
-                    # update signals and counters
-                    OPEN_LIMIT_ORDERS -=2
-                    OPEN_TRADES -=1
-                    continue
-
-            
-                
-
-
-## recreate pandas from vectors
-df = pd.DataFrame(data, index=data['datetime'])
-pd_orders_open = pd.DataFrame(orders_open)
-pd_orders_closed = pd.DataFrame(orders_closed)  
-tf = pd.DataFrame(trades)
-
-pront.critical(tf)
-
-pront.info(pd_orders_open)
-pront.debug(pd_orders_closed)
-pront.warning(tf)
-
-s.plot_trades(tf=tf, df=df, ax=ax)
+st.print_metrics()
 
 fplt.show()
+plt.show()
 
 

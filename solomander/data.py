@@ -32,7 +32,14 @@ def load_yfinance(ticker: str, start :str = "2023-01-01", end: str= "2023-12-31"
     if os.path.exists(filePath):
         df = pd.read_csv(filePath, parse_dates=["datetime"], index_col="datetime")
         df.index = pd.to_datetime(df.index)
-        df.index.tz_convert("UTC").tz_localize(None)
+
+        if df.index.tz is None:
+            # Index is tz-naive, so localize
+            df.index = df.index.tz_localize("UTC")
+        else:
+            # Index is tz-aware, so convert
+            df.index = df.index.tz_convert("UTC")
+
         log.debug(f"File found in data/{fileName} Opening now queen.")
         log.debug(f"Data from {df.index.tz} {df.index[0]} to {df.index[-1]} of interval {interval}")
         return df
@@ -59,16 +66,23 @@ def load_yfinance(ticker: str, start :str = "2023-01-01", end: str= "2023-12-31"
     df.reset_index(drop=True)
     df.index.name = "datetime"
 
-    
+
     if df is None:
         log.debug(f"Failed to load data for {ticker} from {start} to {end} with interval {interval}.")
         df = pd.DataFrame()  # Return empty DataFrame if no data
         df.index = pd.to_datetime(df.index)
-        df.index = df.index.tz_convert("UTC").tz_localize(None)
         return df
+    
     else:
         df.index = pd.to_datetime(df.index)
-        df.index = df.index.tz_convert("UTC").tz_localize(None)
+
+        if df.index.tz is None:
+            # Index is tz-naive, so localize
+            df.index = df.index.tz_localize("UTC")
+        else:
+            # Index is tz-aware, so convert
+            df.index = df.index.tz_convert("UTC")
+
         log.debug(f"Successfully downloaded {ticker} from {df.index.tz} {start} to {end} of interval {interval}")
         log.debug(f"Saving to file to {filePath}")
         # Save to CSV

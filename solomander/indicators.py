@@ -3,18 +3,20 @@ import finplot as fplt
 import pytz
 from datetime import time
 
+
 try:
-    from logger import log, stamp, pront
-    from data import load_yfinance
-    from visuals import plot_timeblock, plot_timeband
-except ImportError:
     from .logger import log, stamp, pront
     from .data import load_yfinance
-    from .visuals import plot_timeblock, plot_timeband 
+except ImportError:
+    # if __name__ == "__main__"
+    from logger import log, stamp, pront
+    from data import load_yfinance
+    
 
 
 
-def vwap(df:pd.DataFrame, start = "00:00", end = "23:59", mode="session", tz="UTC"): 
+
+def vwap(df:pd.DataFrame, ax=None, start = "00:00", end = "23:59", mode="session", tz="UTC"): 
 
     # local df copy
     df_timezone = df.index.tz # save orginal tz format
@@ -132,6 +134,8 @@ def sessions(df):
 
 
 if __name__ == "__main__":
+
+    from visuals import plot_timeblock, plot_timeband 
 
     df = load_yfinance("MNQ=F", start="2025-08-16", end="2025-09-16", interval="5m")
     fplt.display_timezone = pytz.timezone("UTC")

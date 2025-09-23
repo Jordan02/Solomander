@@ -1,14 +1,20 @@
 import finplot as fplt
 import pandas as pd
 
+
 try:
 
     from .logger import log, stamp, pront
     from .data import load_yfinance
+    from .strategy import Strategy
+    
 except ImportError:
     
     from logger import log, stamp, pront
     from data import load_yfinance
+    from strategy import Strategy
+    
+    
 
 
 def plot_trades(tf: pd.DataFrame, cc: pd.DataFrame, df: pd.DataFrame, ax, boxes=True):
@@ -53,6 +59,10 @@ def plot_trades(tf: pd.DataFrame, cc: pd.DataFrame, df: pd.DataFrame, ax, boxes=
             # SL and TP areas
             fplt.add_rect((tf.loc[i,'entry_time'], tf.loc[i,'entry_price']), (tf.loc[i,'exit_time']+ time_step, tf.loc[i,'tp']), ax = ax, color="#74e4745f") 
             fplt.add_rect((tf.loc[i,'entry_time'], tf.loc[i,'entry_price']), (tf.loc[i,'exit_time']+ time_step, tf.loc[i,'sl']), ax = ax, color="#e481745f") 
+
+def plot_candles(start , ax):
+    
+    return
 
 def plot_timeblock(df, column, ax, color="#2448e960", title=""):
 
