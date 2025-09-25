@@ -14,11 +14,10 @@ pd.set_option("display.max_columns", None)
 
 # ==== CONSTANTS =====
 
-SMA_SLOW = 46
-SMA_FAST = 16
-RR = 1.5
-ATR_MULTIPLIER = 1.2
-SIZE = 1
+SMA_SLOW = 50
+SMA_FAST = 20
+RR = 2
+ATR_MULTIPLIER = 2
 
 # ==== DATA AND INDICATORS =====
 df = s.load_yfinance("MNQ=F", start="2025-08-16", end="2025-09-16", interval="5m")
@@ -39,30 +38,35 @@ class strat1(Strategy):
 
     # ===== BUY LOGIC =====
     def buy_condition(self, i):
-        time_cond = self.data['NY'][i] > 0 # in ny session    
-        return self.data['crossover'][i] > 0 and self.OPEN_TRADES < 3
+        time_cond = self.data['NY'][i] > 0  # Only trade in NY session
+        price_above_vwap = self.data['close'][i] > self.data['vwap'][i]
+        pullback = self.data['low'][i] <= self.data['vwap'][i]  # touched VWAP
+        return time_cond and price_above_vwap and pullback and self.OPEN_TRADES < 3
+
 
     def buy_action(self, i):
-        
         pre_i = max(0, i)
-        sl = self.data['atr'][pre_i]*ATR_MULTIPLIER
-        tp = sl * RR
-        self.bracket_order(i,'buy', SIZE, sl_pips=sl, tp_pips=tp, comments='B')
-        return 
-    
-    # ===== SELL LOGIC =====
-    def sell_condition(self, i):
+        rr = RR
+        sl = self.data['atr'][pre_i] * ATR_MULTIPLIER
+        tp = sl * rr
+        self.bracket_order(i, 'buy', 1, sl_pips=sl, tp_pips=tp, comments='VWAP-BUY')
+        return
 
-        time_cond = self.data['NY'][i] > 0 # in ny session  
-        return self.data['crossunder'][i] > 0 and self.OPEN_TRADES < 3
-    
+
+    def sell_condition(self, i):
+        time_cond = self.data['NY'][i] > 0  # Only trade in NY session
+        price_below_vwap = self.data['close'][i] < self.data['vwap'][i]
+        pullback = self.data['high'][i] >= self.data['vwap'][i]  # touched VWAP
+        return time_cond and price_below_vwap and pullback and self.OPEN_TRADES < 3
+
+
     def sell_action(self, i):
-    
         pre_i = max(0, i)
-        sl = self.data['atr'][pre_i]*ATR_MULTIPLIER
-        tp = sl * RR
-        self.bracket_order(i,'sell', SIZE, sl_pips=sl, tp_pips=tp, comments='S')
-        return 
+        rr = RR
+        sl = self.data['atr'][pre_i] * ATR_MULTIPLIER
+        tp = sl * rr
+        self.bracket_order(i, 'sell', 1, sl_pips=sl, tp_pips=tp, comments='VWAP-SELL')
+        return
     
     
 st = strat1(df)
@@ -70,7 +74,6 @@ st.FEE = 1.74
 st.LEVERAGE = 2
 
 st.execute()
-
 
 # ==== PLOTTING VISUALS =====
 
@@ -94,10 +97,28 @@ pront.info(st.CUM_PNL.head(20))
     
 # ==== OUTPUTS =====
 
-s.monte_carlo(st.tf, runs=500, mode='permutation')
+cum_pnl = st.CUM_PNL['cum_pnl']
+pnl = st.tf['pnl']
+
+max_dd = s.max_drawdown(pnl)
+pront.info(f"Max Drawdown: {max_dd}")
+
+fig, ax = plt.subplots(figsize=(10,5))
+
+# Plot dots
+ax.plot(cum_pnl.index, cum_pnl.values, 'o', color="#ff6a00", markersize=4)
+ax.plot(cum_pnl.index, cum_pnl.values, '--', color="#ff6a00", label="cumulative PnL")
+ax.axhline(0, color="#130000", linestyle="--")
+
+# Labels & legend
+ax.set_title("Monte Carlo")
+ax.set_xlabel("Trades")
+ax.set_ylabel("PnL")
+ax.legend()
+
 st.print_metrics()
 
-#fplt.show()
+fplt.show()
 plt.show()
 
 

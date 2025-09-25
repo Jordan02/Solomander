@@ -50,6 +50,8 @@ class Strategy:
         self.LEVERAGE = 1       # leverage
         self.FEE = 1.74         # fee round trip per trade
         self.SLIPPAGE = 0.0     # slippage per trade
+        self.TEST_DAYS = np.busday_count(df.index[0].date(), df.index[-1].date()) # number of business days in test period
+        self.TEST_DAYS = max(1, self.TEST_DAYS) 
 
         # ==== DYNANIMC signals, Counters and metrics (will be updated during execution) ====
         
@@ -78,8 +80,10 @@ class Strategy:
 
         self.PAYOFF_RATIO = 0.0 #check
         self.PROFIT_FACTOR = 0.0 #check
-        self.SHARPE_RATIO = 0.0 #check
-        self.SORTINO_RATIO = 0.0 #check
+        self.SHARPE_RATIO_ANNUAL = 0.0 #check
+        self.SORTINO_RATIO_ANNUAL = 0.0 #check
+        self.SHARPE_RATIO_DAILY = 0.0 #check
+        self.SORTINO_RATIO_DAILY = 0.0 #check
         self.MAX_DRAWDOWN = 0.0 #check
         self.PNL = 0.0 #check
         self.PNL_MDD_RATIO = 0.0 #check
@@ -115,13 +119,18 @@ class Strategy:
     @final
     def print_metrics(self):
 
-        label_width = 15  # adjust so colons line up
+        label_width = 18  # adjust so colons line up
         
-        print("\n=== STRATEGY METRICS ===")
-        print(f"{'PNL:':<{label_width}} ${self.PNL:.2f}")
+        print("\n=== TEST METRICS ===")
+        print(f"{'Start:':<{label_width}} {self.df.index[0]}")
+        print(f"{'End:':<{label_width}} {self.df.index[-1]}")
+        print(f"{'Days:':<{label_width}} {self.TEST_DAYS}")
         print(f"{'Total Trades:':<{label_width}} {self.TOTAL_TRADES}")
         print(f"{'Total Longs:':<{label_width}} {self.TOTAL_LONGS}")
         print(f"{'Total Shorts:':<{label_width}} {self.TOTAL_SHORTS}")
+
+        print("\n=== STRATEGY METRICS ===")
+        print(f"{'PNL:':<{label_width}} ${self.PNL:.2f}")
         print(f"{'Win Rate Long:':<{label_width}} {self.WIN_RATE_LONG:.2f}%")
         print(f"{'Win Rate Short:':<{label_width}} {self.WIN_RATE_SHORT:.2f}%")
         print(f"{'Win Rate Total:':<{label_width}} {self.WIN_RATE:.2f}%")
@@ -131,8 +140,10 @@ class Strategy:
         print(f"{'PnL/MDD Ratio:':<{label_width}} {self.PNL_MDD_RATIO:.2f}")
         print(f"{'Payoff Ratio:':<{label_width}} {self.PAYOFF_RATIO:.2f}")
         print(f"{'Profit Factor:':<{label_width}} {self.PROFIT_FACTOR:.2f}")
-        print(f"{'Sharpe Ratio:':<{label_width}} {self.SHARPE_RATIO:.2f}")
-        print(f"{'Sortino Ratio:':<{label_width}} {self.SORTINO_RATIO:.2f}")
+        print(f"{'Sharpe Ratio(Y):':<{label_width}} {self.SHARPE_RATIO_ANNUAL:.2f}")
+        print(f"{'Sharpe Ratio(D):':<{label_width}} {self.SHARPE_RATIO_DAILY:.2f}")
+        print(f"{'Sortino Ratio(Y):':<{label_width}} {self.SORTINO_RATIO_ANNUAL:.2f}")
+        print(f"{'Sortino Ratio(D):':<{label_width}} {self.SORTINO_RATIO_DAILY:.2f}")
         return
 
     @final
@@ -283,15 +294,22 @@ class Strategy:
 
         self.PROFIT_FACTOR = (self.TOTAL_PROFIT / (self.TOTAL_LOSS*-1)) if self.TOTAL_LOSS !=0 else 0
 
-        self.SHARPE_RATIO = (
-                              self.tf['pnl'].mean() / self.tf['pnl'].std(ddof=1) * np.sqrt(252)
-                              if not self.tf['pnl'].empty and self.tf['pnl'].std(ddof=1) != 0 else 0
-                            )
-        self.SORTINO_RATIO = (
-                                self.tf['pnl'].mean() / losing_trades['pnl'].std(ddof=1) * np.sqrt(252)
-                                if not self.tf['pnl'].empty and not losing_trades['pnl'].empty and losing_trades['pnl'].std(ddof=1) != 0 else 0
-                             )
- 
+        # annualized ratios
+        daily_returns = self.tf.groupby(self.tf['exit_time'].dt.date)['return'].sum()
+        self.SHARPE_RATIO_DAILY = (daily_returns.mean() / daily_returns.std(ddof=1)
+                                    if not daily_returns.empty and daily_returns.std(ddof=1) != 0 else 0
+                                  )
+
+        self.SHARPE_RATIO_ANNUAL = self.SHARPE_RATIO_DAILY * np.sqrt(252)
+
+        # not this is the shortcut verison. Fine, but as chat about it if you want.
+        downside_returns = daily_returns[daily_returns < 0]
+        self.SORTINO_RATIO_DAILY = (daily_returns.mean() / downside_returns.std(ddof=1)
+                                    if not daily_returns.empty and not downside_returns.empty and downside_returns.std(ddof=1) != 0 else 0
+                                    )
+
+        self.SORTINO_RATIO_ANNUAL = self.SORTINO_RATIO_DAILY * np.sqrt(252) 
+
     # === STOP LOSS AND TAKE PROFIT CHECK FUNCTION ===
     def _check_market_sltp(self, i):
 
@@ -322,9 +340,22 @@ class Strategy:
                 tp_pnl = (order['price'] - order_tp['price']) * qty*self.LEVERAGE - (self.FEE * qty)
                 sl_pnl = (order['price'] - order_sl['price']) * qty*self.LEVERAGE - (self.FEE * qty)
 
-
             ## ====== TL HIT ======
             if tp_condition: 
+            
+                # update signals and counters
+                self.OPEN_LIMIT_ORDERS -=2
+                self.OPEN_ORDERS -=1
+                self.OPEN_TRADES -=1
+                previous_margin = self.MARGIN
+                self.MARGIN += tp_pnl
+                
+                if order_side =='buy':
+                    self.WINS_LONG +=1
+                    self.TOTAL_WINS +=1
+                else: 
+                    self.WINS_SHORT +=1
+                    self.TOTAL_WINS +=1
 
                 # add trade order record
                 
@@ -339,6 +370,8 @@ class Strategy:
                                         'sl': order_sl['price'], 
                                         'tp': order_tp['price'], 
                                         'pnl':tp_pnl,
+                                        'margin': self.MARGIN,
+                                        'return': tp_pnl/(previous_margin) if previous_margin !=0 else 0,
                                         'fee':self.FEE * qty, 
                                         'comments': ''})
                 
@@ -358,21 +391,6 @@ class Strategy:
                 self.orders_closed.append(order)
                 self.orders_closed.append(order_sl)
                 self.orders_closed.append(order_tp)
-
-                # update signals and counters
-                self.OPEN_LIMIT_ORDERS -=2
-                self.OPEN_ORDERS -=1
-                self.OPEN_TRADES -=1
-                self.MARGIN += tp_pnl
-                
-                if order_side =='buy':
-                    self.WINS_LONG +=1
-                    self.TOTAL_WINS +=1
-                else: 
-                    self.WINS_SHORT +=1
-                    self.TOTAL_WINS +=1
-
-
                 continue
                 
             ## ====== LONG/SHORT SL CONDITION ======
@@ -386,8 +404,19 @@ class Strategy:
             ## ====== (BUY) SL HIT ======
             if sl_condition:
 
+                # update signals and counters
+                self.OPEN_LIMIT_ORDERS -=2
+                self.OPEN_ORDERS -=1
+                self.OPEN_TRADES -=1
+                previous_margin = self.MARGIN
+                self.MARGIN += sl_pnl
+
+                if order_side =='buy':
+                    pass
+                else: 
+                    pass
+
                 # add trade order record
-                pnl = order['price'] - order_sl['price']
                 self.trades.append({    'trade_id': trade_id,
                                         'entry_time': order['entry_time'],
                                         'exit_time': self.data['datetime'][i], 
@@ -399,6 +428,8 @@ class Strategy:
                                         'sl': order_sl['price'], 
                                         'tp': order_tp['price'], 
                                         'pnl':sl_pnl,
+                                        'margin': self.MARGIN,
+                                        'return': sl_pnl/(previous_margin) if previous_margin !=0 else 0,
                                         'fee':self.FEE * qty,
                                         'comments': ''})
                         
@@ -419,18 +450,6 @@ class Strategy:
                 self.orders_closed.append(order)
                 self.orders_closed.append(order_sl)
                 self.orders_closed.append(order_tp)
-
-                # update signals and counters
-                self.OPEN_LIMIT_ORDERS -=2
-                self.OPEN_ORDERS -=1
-                self.OPEN_TRADES -=1
-                self.MARGIN += sl_pnl
-
-                if order_side =='buy':
-                    pass
-                else: 
-                    pass
-
                 continue
 
 

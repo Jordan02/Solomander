@@ -4,7 +4,8 @@ from .logger import log, stamp, pront, set_log_level
 from .indicators import vwap, timeblock, sessions, timeband
 from .strategy import Strategy
 from .visuals import plot_trades, plot_timeblock, plot_timeband
-from .analysis import max_drawdown
+from .analysis import max_drawdown, monte_carlo 
+
 
 __all__ = [
     "load_yfinance",
@@ -12,7 +13,7 @@ __all__ = [
     "vwap", "timeblock", "sessions", "timeband",
     "Strategy", 
     "plot_trades", "plot_timeblock", "plot_timeband",
-    "max_drawdown"
+    "max_drawdown", "monte_carlo"
 ]
 
 
