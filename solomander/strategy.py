@@ -12,16 +12,18 @@ try:
     from .indicators import vwap, timeband, sessions
     from .logger import log, stamp, pront
     from .data import load_yfinance
-    from .analysis import max_drawdown
+    from .analysis import max_drawdown, sharpe, sortino
+    from .visuals import plot_trades
 except ImportError:
     from indicators import vwap, timeband, sessions
     from logger import log, stamp, pront
     from data import load_yfinance
-    from analysis import max_drawdown
+    from analysis import max_drawdown, sharpe, sortino
+    from visuals import plot_trades
     
 
 class Strategy:
-    def __init__(self, df : pd.DataFrame):
+    def __init__(self, df : pd.DataFrame, **kwargs):
         
         # panda dataframes
         self.df = df                     # main dataframe (candles/indiciators)
@@ -37,10 +39,10 @@ class Strategy:
         self.orders_closed =[]
         self.trades =[]
         self.cum_margin = []
+        self.axs = []                # finplot axes for plotting
 
-        # convert df to numpy arrays for faster processing. 
-        self.data = {col: df[col].to_numpy().copy() for col in df.columns}
-        self.data['datetime'] = df.index.to_numpy().copy() # Copy allows overriding of values
+        # python dicts
+        self.data = {}  # will hold numpy arrays of df for faster processing
 
         # Account info
         self.STARTING_MARGIN = 10000.0      # starting margin
@@ -88,7 +90,10 @@ class Strategy:
         self.PNL = 0.0 #check
         self.PNL_MDD_RATIO = 0.0 #check
 
-
+        # override (and set new) parameters with kwargs
+        # e.g. FEE=2, NEW_PARAM=5
+        #for key, value in kwargs.items():
+        #    setattr(self, key, value)
 
 
     def buy_condition(self, i):
@@ -105,16 +110,39 @@ class Strategy:
         return 0
 
     def buy_action(self, i):
-        # default buy action
-        # inherit and override this method for custom strategy
-        self.bracket_order(i,'buy', 1, sl_pips=40, tp_pips=40, comments='default Buy')
-        return
+
+        return 0
 
     def sell_action(self, i):
-        # default sell action
-        # inherit and override this method for custom strategy
-        self.bracket_order(i,'sell', 1, sl_pips=40, tp_pips=40, comments='default Sell')
+        
         return
+
+    def plots(self, rows=2):
+        
+        if rows < 2:
+            stamp.critical("Strategy.plots(): rows must be >=2")
+            return
+        
+        self.axs = fplt.create_plot('MNQ Chart', rows=rows)
+
+        # standard candles
+        fplt.volume_ocv(self.df[['open', 'close', 'volume']], ax=self.axs[0].overlay())
+        fplt.candlestick_ochl(self.df, ax=self.axs[0])
+        plot_trades(tf=self.tf, cc=self.cc, df=self.df, ax=self.axs[0], boxes=True)
+        
+        # PnL chart
+        fplt.add_line((self.df.index[0], self.STARTING_MARGIN), (self.df.index[-1], self.STARTING_MARGIN), ax=self.axs[-1], color="#130000", style="--")
+        fplt.plot(self.CUM_MARGIN, ax=self.axs[-1], color="#ff6a00", legend="cumulative Pnl")
+
+
+    @final
+    def show(self):
+        self.plots()
+        fplt.show()
+        return
+
+
+    
 
     @final
     def print_metrics(self):
@@ -252,6 +280,10 @@ class Strategy:
     @final
     def execute(self):
 
+        # convert df to numpy arrays for faster processing.
+        self.data = {col: self.df[col].to_numpy().copy() for col in self.df.columns}
+        self.data['datetime'] = self.df.index.to_numpy().copy() # Copy allows overriding of values
+
         # Fixed Strategy loop:
         for i in range(len(self.df)):
 
@@ -295,23 +327,19 @@ class Strategy:
         self.PROFIT_FACTOR = (self.TOTAL_PROFIT / (self.TOTAL_LOSS*-1)) if self.TOTAL_LOSS !=0 else 0
 
         # annualized ratios
-        daily_returns = self.tf.groupby(self.tf['exit_time'].dt.date)['return'].sum()
-        self.SHARPE_RATIO_DAILY = (daily_returns.mean() / daily_returns.std(ddof=1)
-                                    if not daily_returns.empty and daily_returns.std(ddof=1) != 0 else 0
-                                  )
-
+        self.SHARPE_RATIO_DAILY = sharpe(self.tf, type="daily")
         self.SHARPE_RATIO_ANNUAL = self.SHARPE_RATIO_DAILY * np.sqrt(252)
 
-        # not this is the shortcut verison. Fine, but as chat about it if you want.
-        downside_returns = daily_returns[daily_returns < 0]
-        self.SORTINO_RATIO_DAILY = (daily_returns.mean() / downside_returns.std(ddof=1)
-                                    if not daily_returns.empty and not downside_returns.empty and downside_returns.std(ddof=1) != 0 else 0
-                                    )
-
+        self.SORTINO_RATIO_DAILY = sortino(self.tf, type="daily")
         self.SORTINO_RATIO_ANNUAL = self.SORTINO_RATIO_DAILY * np.sqrt(252) 
 
-    # === STOP LOSS AND TAKE PROFIT CHECK FUNCTION ===
+    @final
     def _check_market_sltp(self, i):
+
+        """
+        Check for stop loss and take profit conditions for open market orders
+        
+        """
 
         # open market orders
         order_market = [o for o in self.orders_open if o['type'] == 'market']

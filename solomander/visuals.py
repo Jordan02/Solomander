@@ -6,13 +6,11 @@ try:
 
     from .logger import log, stamp, pront
     from .data import load_yfinance
-    from .strategy import Strategy
     
 except ImportError:
     
     from logger import log, stamp, pront
     from data import load_yfinance
-    from strategy import Strategy
     
     
 
