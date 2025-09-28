@@ -90,11 +90,10 @@ class Strategy:
         self.PNL = 0.0 #check
         self.PNL_MDD_RATIO = 0.0 #check
 
-        # override (and set new) parameters with kwargs
-        # e.g. FEE=2, NEW_PARAM=5
-        #for key, value in kwargs.items():
-        #    setattr(self, key, value)
-
+        # ==== All Kwargs are stored as Strategy params ====
+        self.INPUT_PARAMS = kwargs
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
     def buy_condition(self, i):
         
@@ -142,7 +141,7 @@ class Strategy:
         return
 
 
-    
+
 
     @final
     def print_metrics(self):

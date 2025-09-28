@@ -5,6 +5,7 @@ from .indicators import vwap, timeblock, sessions, timeband
 from .strategy import Strategy
 from .visuals import plot_trades, plot_timeblock, plot_timeband
 from .analysis import max_drawdown, monte_carlo, monte_carlo_metric, _plot_histogram, sharpe, sortino
+from .optimsation import Optimise
 #from .optimsation import
 
 
@@ -14,7 +15,8 @@ __all__ = [
     "vwap", "timeblock", "sessions", "timeband",
     "Strategy", 
     "plot_trades", "plot_timeblock", "plot_timeband",
-    "max_drawdown", "monte_carlo", "monte_carlo_metric", "_plot_histogram", "sharpe", "sortino"
+    "max_drawdown", "monte_carlo", "monte_carlo_metric", "_plot_histogram", "sharpe", "sortino",
+    "Optimise"
 ]
 
 

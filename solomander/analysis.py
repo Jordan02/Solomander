@@ -33,7 +33,7 @@ def max_drawdown(pnl):
 
 
 
-def monte_carlo (tf:pd.DataFrame, runs:int=100, seed:int=None, mode:str="bootstrap"):
+def monte_carlo (tf:pd.DataFrame, runs:int=100, seed:int=None, mode:str="bootstrap", params=None):
     
     # permuation Monte Carlo = no resampling, just shuffle the trades
     # Bootsrap Monte Carlo = resample with replacement
@@ -65,11 +65,16 @@ def monte_carlo (tf:pd.DataFrame, runs:int=100, seed:int=None, mode:str="bootstr
     ax.set_ylabel("PnL")
     ax.legend()
     
+
     text_data = '\n'.join((
             f"runs: {runs}",
             f"resampling mode: {mode}",
             f"seed: {seed}"
             ))
+
+    if params is not None:
+        text_params = '\n'.join([f"{k}: {v:<.2f}" for k, v in params.items()])
+        text_data = '\n'.join([text_data, text_params])
 
     ax.text(0.05, 0.95, text_data,
                     transform=ax.transAxes,
@@ -190,12 +195,6 @@ def _plot_histogram(ax, data, runs, bin_qty=100, textstr="", title="Histogram", 
     skew_value = skew(data)
     skew_mean = skewnorm.mean(shape, loc, scale)
 
-    # SHOULD YOU WANT confidence interval (CI) on your lower_95 VALUE
-    # SE (standard error) = sqrt(q(1-q)/n) where q = 0.05 (lower 95% CI), n = runs
-    # we get a z score for this, multiple by SE to get coffset for CI.
-    #ci_lower = lower_95 - z * se
-    #ci_upper = lower_95 + z * se
-    
     # labels
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Frequency")
@@ -214,8 +213,11 @@ def _plot_histogram(ax, data, runs, bin_qty=100, textstr="", title="Histogram", 
     #upper 95% limit
     xlim = ax.get_xlim()
     ax.axvline(upper_95, color="red", linestyle="--", label="95% VaR: {:.2f}".format(upper_95))
-    ax.text(upper_95 + (xlim[1]-xlim[0])*0.07, ax.get_ylim()[1]*0.5, f"{upper_95:.1f}", 
-        color="red", rotation=90, va="center", ha="right", fontsize=9)
+    ax.annotate(f"  {upper_95:.1f}", 
+                    xy=(upper_95, ax.get_ylim()[1]*0.5),
+                    xytext=(5,0), textcoords="offset points",  # fixed 5pt offset
+                    color="red", rotation=90,
+                    va="center", ha="left", fontsize=8)
 
     # text box
     text_data = '\n'.join((
@@ -229,12 +231,12 @@ def _plot_histogram(ax, data, runs, bin_qty=100, textstr="", title="Histogram", 
     textstr = '\n'.join([text_data, textstr])
 
     ax.text(0.05, 0.95, textstr,
-                    transform=ax.transAxes,
-                    fontsize=7,
-                    verticalalignment='top',
-                    horizontalalignment='left',
-                    rotation_mode='anchor',
-                    bbox=dict(boxstyle="round,pad=0.3", edgecolor="black", facecolor="white", alpha=0.7))
+                        transform=ax.transAxes,
+                        fontsize=7,
+                        va='top',
+                        ha='left',
+                        rotation_mode='anchor',
+                        bbox=dict(boxstyle="round,pad=0.3", edgecolor="black", facecolor="white", alpha=0.7))
 
     pass
 
