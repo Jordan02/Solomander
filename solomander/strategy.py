@@ -12,13 +12,13 @@ try:
     from .indicators import vwap, timeband, sessions
     from .logger import log, stamp, pront
     from .data import load_yfinance
-    from .analysis import max_drawdown, sharpe, sortino
+    from .utils import max_drawdown, sharpe, sortino
     from .visuals import plot_trades
 except ImportError:
     from indicators import vwap, timeband, sessions
     from logger import log, stamp, pront
     from data import load_yfinance
-    from analysis import max_drawdown, sharpe, sortino
+    from utils import max_drawdown, sharpe, sortino
     from visuals import plot_trades
     
 
@@ -92,6 +92,7 @@ class Strategy:
 
         # ==== All Kwargs are stored as Strategy params ====
         self.INPUT_PARAMS = kwargs
+        self.init_kwargs = kwargs.copy() # store original kwargs for reference
         for key, value in kwargs.items():
             setattr(self, key, value)
 
@@ -155,6 +156,9 @@ class Strategy:
         print(f"{'Total Trades:':<{label_width}} {self.TOTAL_TRADES}")
         print(f"{'Total Longs:':<{label_width}} {self.TOTAL_LONGS}")
         print(f"{'Total Shorts:':<{label_width}} {self.TOTAL_SHORTS}")
+
+        for key, value in self.INPUT_PARAMS.items():
+            print(f"{key + ':':<{label_width}} {value}")
 
         print("\n=== STRATEGY METRICS ===")
         print(f"{'PNL:':<{label_width}} ${self.PNL:.2f}")

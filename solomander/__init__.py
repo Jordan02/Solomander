@@ -4,8 +4,9 @@ from .logger import log, stamp, pront, set_log_level
 from .indicators import vwap, timeblock, sessions, timeband
 from .strategy import Strategy
 from .visuals import plot_trades, plot_timeblock, plot_timeband
-from .analysis import max_drawdown, monte_carlo, monte_carlo_metric, _plot_histogram, sharpe, sortino
+from .analysis import monte_carlo, monte_carlo_metric, _plot_histogram, noise_test
 from .optimsation import Optimise
+from .utils import sharpe, sortino, max_drawdown, random_color
 #from .optimsation import
 
 
@@ -15,8 +16,9 @@ __all__ = [
     "vwap", "timeblock", "sessions", "timeband",
     "Strategy", 
     "plot_trades", "plot_timeblock", "plot_timeband",
-    "max_drawdown", "monte_carlo", "monte_carlo_metric", "_plot_histogram", "sharpe", "sortino",
-    "Optimise"
+    "monte_carlo", "monte_carlo_metric", "_plot_histogram", "noise_test",
+    "Optimise",
+    "sharpe", "sortino", "max_drawdown"
 ]
 
 

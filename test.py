@@ -126,17 +126,20 @@ def objective(trial):
 
 #guess_1={"atr_multiplier": 1.83, "sma_fast": 6, "sma_slow": 46}
 guess_1={"atr_multiplier": 2.17, "sma_fast": 11.0, "sma_slow": 55}
-guess_2={"atr_multiplier": 4, "sma_fast": 7, "sma_slow": 56}
+guess_2={"atr_multiplier": 1.33, "sma_fast": 15, "sma_slow": 51}
+guess_3={"atr_multiplier": 1.22, "sma_fast": 16, "sma_slow": 52} # 5-15SR best so far
 
+best_params = guess_3
 
-study = s.Optimise( objective,
-                    n_trials=200, 
-                    n_jobs=1, 
-                    guess=[], 
-                    direction = 'maximize',
-                    target="Sharpe Ratio")
-best_params = study.execute()
-study.show(pnl_curves=pnl_curve, info=display_values)
+if 0:
+    study = s.Optimise( objective,
+                        n_trials=200, 
+                        n_jobs=1, 
+                        guess=[guess_1,guess_2,guess_3], 
+                        direction = 'maximize',
+                        target="Sharpe Ratio")
+    best_params = study.execute()
+    study.show(pnl_curves=pnl_curve, info=display_values)
 
 
 st = strat1(df,
@@ -154,7 +157,11 @@ st.execute()
 #st.show()
 st.print_metrics()
 
-s.monte_carlo(st.tf, runs=500, mode='bootstrap', seed=156, params=st.INPUT_PARAMS)
+test_params={'SMA_FAST':1,'SMA_SLOW':1}
+#test_params={'ATR_MULTIPLIER':0.01, 'RR': 0.02}
+#s.monte_carlo(st.tf, runs=300, mode='bootstrap', seed=156, params=st.INPUT_PARAMS)
+s.noise_test(st, test_params=test_params, nudges=3)
+
 plt.show()
 
 

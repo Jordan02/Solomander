@@ -5,31 +5,14 @@ from scipy.stats import norm, skewnorm, skew
 
 try:
     from .logger import log, stamp, pront
+    from .strategy import Strategy
+    from .utils import random_color, max_drawdown, sharpe, sortino
 except ImportError:
     from logger import log, stamp, pront
+    from strategy import Strategy
+    from .utils import random_color, max_drawdown, sharpe, sortino
   
 
-
-def max_drawdown(pnl):
-    # ensure numpy array, but only convert if necessary
-    if isinstance(pnl, pd.Series):
-        pnl_array = pnl.to_numpy()
-    elif isinstance(pnl, np.ndarray):
-        pnl_array = pnl
-    else:
-        pnl_array = np.asarray(pnl)  # fallback for lists, etc.
-
-    max_loss = 0
-    current_loss = 0
-
-    for val in pnl_array:
-        if val < 0:
-            current_loss += val  # accumulate drawdown
-            max_loss = min(max_loss, current_loss)
-        else:
-            current_loss = 0  # reset on win
-
-    return max_loss
 
 
 
@@ -115,13 +98,13 @@ def monte_carlo (tf:pd.DataFrame, runs:int=100, seed:int=None, mode:str="bootstr
 
     # MDD Histogram Calculation
 
-    _plot_histogram(ax_hist, MDD, runs, bin_qty=50, textstr=f"Original MDD: {original_mdd:.2f}", title="Drawdown", xlabel="")
+    _plot_histogram(ax_hist, MDD, bin_qty=50, textstr=f"Original MDD: {original_mdd:.2f}", title="Drawdown", xlabel="")
     if mode == "bootstrap":
         # These distrubations only occur for bootstrap mode
         ax_pnl = fig.add_subplot(gs[2,1])
         ax_sr = fig.add_subplot(gs[1,1])
-        _plot_histogram(ax_sr, SR, runs, bin_qty=50, textstr=f"Original SR: {original_sr:.2f}", title="Sharpe Ratio", xlabel="")
-        _plot_histogram(ax_pnl, PNL, runs, bin_qty=50, textstr=f"Original PnL: {original_pnl:.2f}", title="PnL", xlabel="")
+        _plot_histogram(ax_sr, SR, bin_qty=50, textstr=f"Original SR: {original_sr:.2f}", title="Sharpe Ratio", xlabel="")
+        _plot_histogram(ax_pnl, PNL, bin_qty=50, textstr=f"Original PnL: {original_pnl:.2f}", title="PnL", xlabel="")
 
     ax.plot(orginal_trades.cumsum(), color="#ff00f2") # orginal
 
@@ -177,16 +160,13 @@ def monte_carlo_metric(tf:pd.DataFrame,runs:int=100,seed:int=42, mode:str="boots
         "sr": np.array(SR)
     }
 
-    
 
-
-
-def _plot_histogram(ax, data, runs, bin_qty=100, textstr="", title="Histogram", xlabel="Value"):
+def _plot_histogram(ax, data, bin_qty=50, textstr="", title="Histogram", xlabel="Value"):
 
     # histogram Calculation
     counts, bins = np.histogram(data, bins=bin_qty)
     shape, loc, scale = skewnorm.fit(data)
-    xs = np.linspace(min(data), max(data), runs)
+    xs = np.linspace(min(data), max(data), bin_qty)
     pdf = skewnorm.pdf(xs, shape, loc, scale) # scale to histogram
     pdf = pdf * (counts.max()/pdf.max())   # normalize
     alpha = 0.05 # location for lower 95% 
@@ -240,43 +220,98 @@ def _plot_histogram(ax, data, runs, bin_qty=100, textstr="", title="Histogram", 
 
     pass
 
-def sharpe(trades:pd.DataFrame, type:str="annual"):
-    """Sharpe Ratio
 
-    trades must contain 'exit_time' (formatted as a datetime) and 'return' columns
-    #note this is the shortcut verison. Fine, but as chat about it if you want.
-
-    """
-    if trades.empty or trades['return'].std(ddof=1) == 0:
-        log.debug("SR: No trades or zero stddev on returns")
-        return 0
-
-    daily_returns = trades.groupby(trades['exit_time'].dt.date)['return'].sum()
-
-    SR_Daily = (daily_returns.mean() / daily_returns.std(ddof=1))
-
-    if type == "daily":
-        return SR_Daily
+def noise_test(strategy: Strategy, test_params: dict, nudges:int=3):
     
-    return SR_Daily * np.sqrt(252)  # assuming 252 trading days in a year
+    tf = strategy.tf.copy()
+    pnls = []
+    pnl_final = []
+    srs = []
 
-def sortino(trades: pd.DataFrame, type: str = "annual"):
-    """Sortino Ratio
+    for key, offset  in test_params.items():
 
-    trades must contain 'exit_time' and 'return' columns
-    """
+        if key not in strategy.INPUT_PARAMS:
+            log.error(f"Parameter '{key}' not found in strategy INPUT_PARAMS")
+            return
+        
+        val = getattr(strategy, key) # value of original param
 
-    if trades.empty or trades['return'].std(ddof=1) == 0:
-        return 0
+        for i in range(-nudges, nudges+1):
 
-    daily_returns = trades.groupby(trades['exit_time'].dt.date)['return'].sum()
-    downside = daily_returns[daily_returns < 0]
+            if i==0:
+                continue # skip original value
+            
+            nudged_param = val + offset * i
+            new_kwargs = strategy.init_kwargs.copy()
+            new_kwargs[key] = nudged_param
+            strat_nudged = strategy.__class__(df=strategy.df, **new_kwargs)
+            strat_nudged.execute()
 
-    sortino_daily = daily_returns.mean() / downside.std(ddof=1)
+            pnls.append((key,nudged_param, strat_nudged.CUM_PNL.to_numpy()))
+            pnl_final.append(strat_nudged.PNL)
+            srs.append(strat_nudged.SHARPE_RATIO_ANNUAL)
 
-    if type == "daily":
-        return sortino_daily
+    
+    fig = plt.figure(figsize=(10,5))
+    gs = fig.add_gridspec(2,2, width_ratios=[2,1])
+    ax = fig.add_subplot(gs[:,0])
+    ax_sr = fig.add_subplot(gs[0,1])
+    ax_pnl = fig.add_subplot(gs[1,1])
 
-    return sortino_daily * np.sqrt(252)  # annualized
+    ax.axhline(0, color="#130000", linestyle="--")
+    ax.set_title("Noise Test")
+    ax.set_xlabel("Trades") 
+    ax.set_ylabel("PnL")
 
 
+    # ==== ORIGINAL CURVE ====
+    x = np.arange(len(strategy.CUM_PNL))
+    y = strategy.CUM_PNL.to_numpy()
+    ax.plot(x,y, color='red', label="Original")
+    param_str = ", ".join(  f"{p}={strategy.init_kwargs[p]:<.2f}" 
+                            for p in test_params.keys() 
+                            if p in strategy.init_kwargs
+                        )
+
+    ax.annotate(    param_str,
+                    xy=(x[-1], y[-1]),
+                    xytext=(3,0),  # offset to the right
+                    textcoords="offset points",
+                    fontsize=6,
+                    color='red'
+                )
+    
+    # ==== NUDGED CURVES ====
+    color = random_color(alpha=0.5)
+    switch_color = 0
+
+    for param,nudged_param,curve in pnls:
+        
+        if switch_color >= nudges*2: 
+            color = random_color(alpha=0.5)
+            switch_color = -1
+        switch_color +=1
+
+        x = np.arange(len(curve))
+        ax.plot(x, curve, color=color)
+
+        ax.annotate(    f"{param}={nudged_param:<.2f}",
+                        xy=(x[-1], curve[-1]),
+                        xytext=(3,0),  # offset to the right
+                        textcoords="offset points",
+                        fontsize=6,
+                        color=color
+                    )
+    
+    # ==== Histogram ====
+    _plot_histogram(ax_sr, srs, bin_qty=50, title="", xlabel="SR", textstr=f"Original SR: {strategy.SHARPE_RATIO_ANNUAL:.2f}")
+    _plot_histogram(ax_pnl, pnl_final, bin_qty=50, title="", xlabel="PnL", textstr=f"Original PnL: {strategy.PNL:.2f}")
+
+    plt.show()
+
+
+        # === get attribute type ===
+
+
+
+    return
