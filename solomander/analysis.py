@@ -18,6 +18,11 @@ except ImportError:
 
 def monte_carlo (tf:pd.DataFrame, runs:int=100, seed:int=None, mode:str="bootstrap", params=None):
     
+    # CHECK IF TRADE DF IS EMPTY
+    if tf.empty == True:
+            log.warning("No orders were executed. Check your strategy logic.")
+            return
+
     # permuation Monte Carlo = no resampling, just shuffle the trades
     # Bootsrap Monte Carlo = resample with replacement
     
@@ -115,6 +120,11 @@ def monte_carlo (tf:pd.DataFrame, runs:int=100, seed:int=None, mode:str="bootstr
 
 def monte_carlo_metric(tf:pd.DataFrame,runs:int=100,seed:int=42, mode:str="bootstrap"):
 
+    # CHECK IF TRADE DF IS EMPTY
+    if tf.empty == True:
+            log.warning("No orders were executed. Check your strategy logic.")
+            return
+    
     # permuation Monte Carlo = no resampling, just shuffle the trades
     # Bootsrap Monte Carlo = resample with replacement
     
@@ -223,6 +233,11 @@ def _plot_histogram(ax, data, bin_qty=50, textstr="", title="Histogram", xlabel=
 
 def noise_test(strategy: Strategy, test_params: dict, nudges:int=3):
     
+    # CHECK IF TRADE DF IS EMPTY
+    if strategy.tf.empty == True:
+            log.warning("No orders were executed. Check your strategy logic.")
+            return
+
     tf = strategy.tf.copy()
     pnls = []
     pnl_final = []
@@ -247,7 +262,7 @@ def noise_test(strategy: Strategy, test_params: dict, nudges:int=3):
             strat_nudged = strategy.__class__(df=strategy.df, **new_kwargs)
             strat_nudged.execute()
 
-            pnls.append((key,nudged_param, strat_nudged.CUM_PNL.to_numpy()))
+            pnls.append((key,nudged_param, strat_nudged.df_cum_pnl.to_numpy()))
             pnl_final.append(strat_nudged.PNL)
             srs.append(strat_nudged.SHARPE_RATIO_ANNUAL)
 
@@ -265,8 +280,8 @@ def noise_test(strategy: Strategy, test_params: dict, nudges:int=3):
 
 
     # ==== ORIGINAL CURVE ====
-    x = np.arange(len(strategy.CUM_PNL))
-    y = strategy.CUM_PNL.to_numpy()
+    x = np.arange(len(strategy.df_cum_pnl))
+    y = strategy.df_cum_pnl.to_numpy()
     ax.plot(x,y, color='red', label="Original")
     param_str = ", ".join(  f"{p}={strategy.init_kwargs[p]:<.2f}" 
                             for p in test_params.keys() 

@@ -73,3 +73,12 @@ def random_color(alpha=1.0):
     rgb = random.randint(0, 0xFFFFFF)
     a = int(alpha * 255)
     return "#{:06x}{:02x}".format(rgb, a)
+
+def timedelta_to_str(td: pd.Timedelta) -> str:
+    minutes = int(td.total_seconds() // 60)
+    if minutes % 60 == 0:   # exact hours
+        return f"{minutes//60}h"
+    elif minutes % 1440 == 0:  # exact days
+        return f"{minutes//1440}d"
+    else:
+        return f"{minutes}m"

@@ -5,6 +5,7 @@ import pandas_ta as pta
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import math
 
 from typing import final
 
@@ -12,48 +13,65 @@ try:
     from .indicators import vwap, timeband, sessions
     from .logger import log, stamp, pront
     from .data import load_yfinance
-    from .utils import max_drawdown, sharpe, sortino
+    from .utils import max_drawdown, sharpe, sortino, timedelta_to_str
     from .visuals import plot_trades
 except ImportError:
     from indicators import vwap, timeband, sessions
     from logger import log, stamp, pront
     from data import load_yfinance
-    from utils import max_drawdown, sharpe, sortino
+    from utils import max_drawdown, sharpe, sortino, timedelta_to_str
     from visuals import plot_trades
     
 
 class Strategy:
-    def __init__(self, df : pd.DataFrame, **kwargs):
+    def __init__(self, df: pd.DataFrame, symbol: dict, **kwargs):
         
+        # settings 
+        self.setting_slippage_entry   = "worst_case"   # off, worst_case, random
+        self.setting_slippage_sl      = "off"          # off, worst_case, random
+        self.setting_slippage_tp      = "off"          # off, worst_case, random 
+        self.setting_rounding_method  = "worst_case"        # nearest, worst_case
+
         # panda dataframes
         self.df = df                     # main dataframe (candles/indiciators)
         self.tf = pd.DataFrame()         # trade dataframe
         self.oo = pd.DataFrame()         # open orders dataframe
         self.cc = pd.DataFrame()         # closed orders dataframe
-        self.CUM_MARGIN = pd.DataFrame() # cumulative margin over time
-        self.CUM_PNL = pd.DataFrame()    # cumulative pnl sequence series
+        self.df_cum_margin = pd.DataFrame() # cumulative margin over time
+        self.df_cum_pnl = pd.DataFrame()    # cumulative pnl sequence series
 
-        # Python lists 
+        # Python lists/ dicts 
         # for dict navigiation, and faster processing (pandas is slow for this)
-        self.orders_open =[]
-        self.orders_closed =[]
-        self.trades =[]
-        self.cum_margin = []
+        self.l_orders_open =[]
+        self.l_orders_closed =[]
+        self.l_trades =[]
+        self.l_cum_margin = []
         self.axs = []                # finplot axes for plotting
-
-        # python dicts
         self.data = {}  # will hold numpy arrays of df for faster processing
 
         # Account info
-        self.STARTING_MARGIN = 10000.0      # starting margin
-        self.MARGIN = self.STARTING_MARGIN  # starting margin
-
+        self.START_MARGIN = 10000.0      # starting margin
+    
         # Market info
-        self.LEVERAGE = 1       # leverage
-        self.FEE = 1.74         # fee round trip per trade
-        self.SLIPPAGE = 0.0     # slippage per trade
-        self.TEST_DAYS = np.busday_count(df.index[0].date(), df.index[-1].date()) # number of business days in test period
-        self.TEST_DAYS = max(1, self.TEST_DAYS) 
+        self.symbol_data        = symbol
+        self.MARKET_SYMBOL      = symbol.get('symbol', 'Unknown Symbol')
+        self.MARKET_NAME        = symbol.get('name', 'Unknown Market')
+        self.MARKET_TYPE        = symbol.get('type', 'futures')           # spot or futures
+        self.TICK_CURRENCY      = symbol.get('tick_currency', 'USD')      # tick currency
+        self.TICK_SIZE          = symbol.get('tick_size', 0.25)           # minimum price increment
+        self.TICK_PRICE         = symbol.get('tick_price', 0.25)          # minimum price increment
+        self.SLIPPAGE           = symbol.get('tick_slippage', 0.25)
+        self.LEVERAGE           = self.TICK_PRICE/self.TICK_SIZE          #  leverage from symbol data
+        
+        self.LOT_CURRENCY      = symbol.get('lot_currency', 'USD')        # lot currency
+        self.LOT_MIN_SIZE      = symbol.get('lot_min_size', 1)            # min contract size
+        self.LOT_INCREMENT     = symbol.get('lot_increment', 1)           # minimum order size increment
+        self.FEE_TYPE          = symbol.get('fee_type', 'fixed')          # fee round trip per trade
+        self.FEE               = symbol.get('fee_value', 1.74)  
+        
+        self.TIME_INTERVAL     = df.index.to_series().diff().dropna().min()
+        self.TIME_INTERVAL_STR = timedelta_to_str(self.TIME_INTERVAL)
+        self.TEST_DAYS         = max(1, np.busday_count(df.index[0].date(), df.index[-1].date())) # number of business days in test period
 
         # ==== DYNANIMC signals, Counters and metrics (will be updated during execution) ====
         
@@ -63,7 +81,7 @@ class Strategy:
         self.OPEN_LIMIT_ORDERS = 0
         self.TOTAL_TRADES = 0
         self.OPEN_TRADES = 0
-        
+
         self.TOTAL_SHORTS = 0 #check
         self.TOTAL_LONGS = 0 #check
         self.WINS_SHORT = 0 #check
@@ -79,7 +97,6 @@ class Strategy:
         self.AVG_LOSS = 0.0 #check
         self.TOTAL_PROFIT = 0.0 #check
         self.TOTAL_LOSS = 0.0 #check
-
         self.PAYOFF_RATIO = 0.0 #check
         self.PROFIT_FACTOR = 0.0 #check
         self.SHARPE_RATIO_ANNUAL = 0.0 #check
@@ -95,6 +112,20 @@ class Strategy:
         self.init_kwargs = kwargs.copy() # store original kwargs for reference
         for key, value in kwargs.items():
             setattr(self, key, value)
+
+        # ==== Values recalculation after setting params ====
+        self.add_market_data()
+        self.ACTIVE_MARGIN = self.START_MARGIN  # starting margin
+        self._setting_rm_buy      = "ceil" if self.setting_rounding_method == "worst_case" else "round"
+        self._setting_rm_buy_sl   = "floor" if self.setting_rounding_method == "worst_case" else "round"
+        self._setting_rm_buy_tp   = "floor" if self.setting_rounding_method == "worst_case" else "round"
+
+        self._setting_rm_sell     = "floor" if self.setting_rounding_method == "worst_case" else "round"
+        self._setting_rm_sell_sl  = "ceil" if self.setting_rounding_method == "worst_case" else "round"
+        self._setting_rm_sell_tp  = "ceil" if self.setting_rounding_method == "worst_case" else "round"
+
+
+
 
     def buy_condition(self, i):
         
@@ -117,31 +148,41 @@ class Strategy:
         
         return
 
-    def plots(self, rows=2):
+    def plots(self, rows=2, **kwargs):
         
+        boxes=kwargs.get('boxes', False)
+        trade_id=kwargs.get('trade_id', False)
+
         if rows < 2:
             stamp.critical("Strategy.plots(): rows must be >=2")
             return
         
-        self.axs = fplt.create_plot('MNQ Chart', rows=rows)
+        self.axs = fplt.create_plot(f"{self.MARKET_NAME}/{self.TIME_INTERVAL_STR}", rows=rows)
 
+    
         # standard candles
         fplt.volume_ocv(self.df[['open', 'close', 'volume']], ax=self.axs[0].overlay())
         fplt.candlestick_ochl(self.df, ax=self.axs[0])
-        plot_trades(tf=self.tf, cc=self.cc, df=self.df, ax=self.axs[0], boxes=True)
+        plot_trades(tf=self.tf, cc=self.cc, timestep=self.TIME_INTERVAL, ax=self.axs[0], boxes=boxes, trade_id=trade_id)
         
         # PnL chart
-        fplt.add_line((self.df.index[0], self.STARTING_MARGIN), (self.df.index[-1], self.STARTING_MARGIN), ax=self.axs[-1], color="#130000", style="--")
-        fplt.plot(self.CUM_MARGIN, ax=self.axs[-1], color="#ff6a00", legend="cumulative Pnl")
+        fplt.add_line((self.df.index[0], self.START_MARGIN), (self.df.index[-1], self.START_MARGIN), ax=self.axs[-1], color="#130000", style="--")
+        fplt.plot(self.df_cum_margin, ax=self.axs[-1], color="#ff6a00", legend="cumulative Pnl")
 
+    def add_market_data(self):
 
-    @final
-    def show(self):
-        self.plots()
-        fplt.show()
         return
 
-
+    @final
+    def show(self, **kwargs):
+        # CHECK IF ANY ORDERS WERE EXECUTED
+        if self.TOTAL_ORDERS == 0:
+            log.warning("No orders were executed. Check your strategy logic.")
+            return
+        
+        self.plots(**kwargs)
+        fplt.show()
+        return
 
 
     @final
@@ -149,6 +190,33 @@ class Strategy:
 
         label_width = 18  # adjust so colons line up
         
+        print("\n=== MODIFED PARAMS ===")
+        for key, value in self.INPUT_PARAMS.items():
+            print(f"{key + ':':<{label_width}} {value}")
+
+        print("\n=== SETTINGS ===")
+        print(f"{'Slippage Entry:':<{label_width}} {self.setting_slippage_entry}")
+        print(f"{'Slippage SL:':<{label_width}} {self.setting_slippage_sl}")
+        print(f"{'Slippage TP:':<{label_width}} {self.setting_slippage_tp}")
+        print(f"{'Rounding Method:':<{label_width}} {self.setting_rounding_method}")
+
+        print("\n=== MARKET PARAMS ===")
+        print(f"{'Market Symbol:':<{label_width}} {self.MARKET_SYMBOL}")
+        print(f"{'Market Name:':<{label_width}} {self.MARKET_NAME}")
+        print(f"{'Market Type:':<{label_width}} {self.MARKET_TYPE}")
+        print(f"{'Tick Currency:':<{label_width}} {self.TICK_CURRENCY}")
+        print(f"{'Tick Size:':<{label_width}} {self.TICK_SIZE}")
+        print(f"{'Tick Price:':<{label_width}} {self.TICK_PRICE}")
+        print(f"{'Slippage:':<{label_width}} {self.SLIPPAGE}")
+        print(f"{'Leverage:':<{label_width}} {self.LEVERAGE}")
+        print(f"{'Lot Currency:':<{label_width}} {self.LOT_CURRENCY}")
+        print(f"{'Lot Min Size:':<{label_width}} {self.LOT_MIN_SIZE}")
+        print(f"{'Lot Increment:':<{label_width}} {self.LOT_INCREMENT}")
+        print(f"{'Fee Type:':<{label_width}} {self.FEE_TYPE}")
+        print(f"{'Fee Value:':<{label_width}} {self.FEE}")
+        print(f"{'Start Margin:':<{label_width}} {self.START_MARGIN}")
+        print(f"{'Active Margin:':<{label_width}} {self.ACTIVE_MARGIN}")
+
         print("\n=== TEST METRICS ===")
         print(f"{'Start:':<{label_width}} {self.df.index[0]}")
         print(f"{'End:':<{label_width}} {self.df.index[-1]}")
@@ -156,9 +224,6 @@ class Strategy:
         print(f"{'Total Trades:':<{label_width}} {self.TOTAL_TRADES}")
         print(f"{'Total Longs:':<{label_width}} {self.TOTAL_LONGS}")
         print(f"{'Total Shorts:':<{label_width}} {self.TOTAL_SHORTS}")
-
-        for key, value in self.INPUT_PARAMS.items():
-            print(f"{key + ':':<{label_width}} {value}")
 
         print("\n=== STRATEGY METRICS ===")
         print(f"{'PNL:':<{label_width}} ${self.PNL:.2f}")
@@ -186,7 +251,7 @@ class Strategy:
         if price is None:
             price = self.data['open'][i]
 
-        self.orders_open.append({'trade_id': self.ORDER_ID,
+        self.l_orders_open.append({'trade_id': self.ORDER_ID,
                                  'entry_time': self.data['datetime'][i], 
                                  'side': side, 
                                  'price': price, 
@@ -207,79 +272,168 @@ class Strategy:
         return
     
     @final
-    def bracket_order(self, i, side, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
+    def _fee(self, qty, price):
 
-        # ---- handling SL/TP price ----
-        if sl_pips is not None:
-            if side == 'buy':
-                _sl_price = self.data['open'][i] - sl_pips
-            else:
-                _sl_price = self.data['open'][i] + sl_pips
+        if self.FEE_TYPE == "percent":
+            # notional value (=price * qty) x fee rate 
+            return price*qty*self.FEE*2
         else:
-            _sl_price = sl_price
-                
-        if tp_pips is not None:
-            if side == 'buy':
-                _tp_price = self.data['open'][i] + tp_pips
-            else:
-                _tp_price = self.data['open'][i] - tp_pips
-        else:
-            _tp_price = tp_price
+            return self.FEE * qty*2
 
-        # ---- handling SL/TP order side ----
-        if side == 'buy':
-            _sl_side = 'sell'
-            _tp_side = 'sell'
+
+    @final
+    def _round_to_tick(self, price, method):
+
+        if method == "round":
+            return round(price / self.TICK_SIZE) * self.TICK_SIZE
+        elif method == "floor":
+            return (price // self.TICK_SIZE) * self.TICK_SIZE
+        elif method == "ceil":
+            return (-( -price // self.TICK_SIZE)) * self.TICK_SIZE
+        else:
+            raise ValueError(f"Unknown rounding method: {method}")
+
+    @final
+    def _slippage(self, setting):
+
+        if setting == "off":
+            return 0.0
+        elif setting == "worst_case":
+            return self.SLIPPAGE
+        elif setting == "random":
+            return self._round_to_tick(np.random.uniform(-self.SLIPPAGE, self.SLIPPAGE), "round")
+
+    @final
+    def _check_qty(self, qty):
+
+        if qty < self.LOT_MIN_SIZE:
+            log.warning(f"Order qty {qty} is less than min lot size {self.LOT_MIN_SIZE}")  
+            return 0
+        if math.isclose(qty % self.LOT_INCREMENT,0, abs_tol=9e-03) == False:
+            log.warning(f"Order qty {qty} not compatible with lot increment {self.LOT_INCREMENT}")
+            return 0
+        return 1
+
+    def sell_bracket(self, i, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
         
-        else:
-            _sl_side = 'buy'
-            _tp_side = 'buy'
+        # ---- CHECKS ----
+        if self._check_qty(qty) == 0:
+            return
+         # ---- calculate entry, sl and tp prices with slippage and rounding ----
+        _entry_price = self._round_to_tick(self.data['open'][i] - self._slippage(self.setting_slippage_entry), self._setting_rm_sell)
 
-        # ---- market order ----
-        self.orders_open.append({'trade_id': self.ORDER_ID,
-                                 'entry_time': self.data['datetime'][i], 
-                                 'side': side, 
-                                 'price': self.data['open'][i], 
-                                 'qty': qty, 
-                                 'filled': 0,
-                                 'type': 'market', 
-                                 'comments': comments})
+        try:
+            if tp_pips is not None and sl_pips is not None:
+                _sl_price = self._round_to_tick((self.data['open'][i] + sl_pips) + self._slippage(self.setting_slippage_sl), self._setting_rm_sell_sl)
+                _tp_price = self._round_to_tick((self.data['open'][i] - tp_pips) + self._slippage(self.setting_slippage_tp), self._setting_rm_sell_tp)
+            else:
+                _sl_price = self._round_to_tick(sl_price + self._slippage(self.setting_slippage_sl), self._setting_rm_sell_sl)
+                _tp_price = self._round_to_tick(tp_price + self._slippage(self.setting_slippage_tp), self._setting_rm_sell_tp)
+        except Exception as e:
+            log.error(f"Error calculating SL/TP prices: {e}")
+
+          # ---- market order ----
+        self.l_orders_open.append({ 'trade_id': self.ORDER_ID,
+                                    'entry_time': self.data['datetime'][i], 
+                                    'side': 'sell', 
+                                    'price': _entry_price, 
+                                    'qty': qty, 
+                                    'filled': 0,
+                                    'type': 'market', 
+                                    'comments': comments})
         
         # ---- SL ----
-        self.orders_open.append({'trade_id': self.ORDER_ID,
-                                 'entry_time': self.data['datetime'][i], 
-                                 'side': _sl_side, 
-                                 'price': _sl_price, 
-                                 'qty': qty, 
-                                 'filled': 0,
-                                 'type': 'sl', 
-                                 'comments': comments})
+        self.l_orders_open.append({ 'trade_id': self.ORDER_ID,
+                                    'entry_time': self.data['datetime'][i], 
+                                    'side': "buy", 
+                                    'price': _sl_price, 
+                                    'qty': qty, 
+                                    'filled': 0,
+                                    'type': 'sl', 
+                                    'comments': comments})
         
         # ---- TP ----
-        self.orders_open.append({'trade_id': self.ORDER_ID,
-                                 'entry_time': self.data['datetime'][i], 
-                                 'side': _tp_side, 
-                                 'price': _tp_price, 
-                                 'qty': qty, 
-                                 'filled': 0,
-                                 'type': 'tp', 
-                                 'comments': comments})
+        self.l_orders_open.append({ 'trade_id': self.ORDER_ID,
+                                    'entry_time': self.data['datetime'][i], 
+                                    'side': "buy", 
+                                    'price': _tp_price, 
+                                    'qty': qty, 
+                                    'filled': 0,
+                                    'type': 'tp', 
+                                    'comments': comments})
         
+        # ---- update counters ----
         self.ORDER_ID += 1
-        
         self.TOTAL_ORDERS +=3
         self.OPEN_ORDERS +=3
         self.OPEN_LIMIT_ORDERS +=2
-        
         self.TOTAL_TRADES +=1
         self.OPEN_TRADES +=1
+        self.TOTAL_SHORTS +=1
+        
+        return
 
-        if side == 'buy':
-            self.TOTAL_LONGS +=1
-        else:
-            self.TOTAL_SHORTS +=1
+    @final
+    def buy_bracket(self, i, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
+
+        # ---- CHECKS ----
+        if self._check_qty(qty) == 0:
+            return
+        # ---- calculate entry, sl and tp prices with slippage and rounding ----
+        _entry_price = self._round_to_tick(self.data['open'][i] + self._slippage(self.setting_slippage_entry), self._setting_rm_buy)
+
+        try:
+            if tp_pips is not None and sl_pips is not None:
+                _sl_price = self._round_to_tick((self.data['open'][i] - sl_pips) - self._slippage(self.setting_slippage_sl), self._setting_rm_buy_sl)
+                _tp_price = self._round_to_tick((self.data['open'][i] + tp_pips) - self._slippage(self.setting_slippage_tp), self._setting_rm_buy_tp)
+            else:
+                _sl_price = self._round_to_tick(sl_price - self._slippage(self.setting_slippage_sl), self._setting_rm_buy_sl)
+                _tp_price = self._round_to_tick(tp_price - self._slippage(self.setting_slippage_tp), self._setting_rm_buy_tp)
+        except Exception as e:
+            log.error(f"Error calculating SL/TP prices: {e}")
+
+          # ---- market order ----
+        self.l_orders_open.append({ 'trade_id': self.ORDER_ID,
+                                    'entry_time': self.data['datetime'][i], 
+                                    'side': 'buy', 
+                                    'price': _entry_price, 
+                                    'qty': qty, 
+                                    'filled': 0,
+                                    'type': 'market', 
+                                    'comments': comments})
+        
+        # ---- SL ----
+        self.l_orders_open.append({ 'trade_id': self.ORDER_ID,
+                                    'entry_time': self.data['datetime'][i], 
+                                    'side': "sell", 
+                                    'price': _sl_price, 
+                                    'qty': qty, 
+                                    'filled': 0,
+                                    'type': 'sl', 
+                                    'comments': comments})
+        
+        # ---- TP ----
+        self.l_orders_open.append({ 'trade_id': self.ORDER_ID,
+                                    'entry_time': self.data['datetime'][i], 
+                                    'side': "sell", 
+                                    'price': _tp_price, 
+                                    'qty': qty, 
+                                    'filled': 0,
+                                    'type': 'tp', 
+                                    'comments': comments})
+        
+        # ---- update counters ----
+        self.ORDER_ID += 1
+        self.TOTAL_ORDERS +=3
+        self.OPEN_ORDERS +=3
+        self.OPEN_LIMIT_ORDERS +=2
+        self.TOTAL_TRADES +=1
+        self.OPEN_TRADES +=1
+        self.TOTAL_LONGS +=1
+        
         return
     
+
     @final
     def execute(self):
 
@@ -301,15 +455,19 @@ class Strategy:
                 pass
 
             self._check_market_sltp(i)
-            self.cum_margin.append(self.MARGIN)  # track margin over time
+            self.l_cum_margin.append(self.ACTIVE_MARGIN)  # track margin over time
 
+        # CHECK IF ANY ORDERS WERE EXECUTED
+        if self.TOTAL_ORDERS == 0:
+            log.warning("No orders were executed. Check your strategy logic.")
+            return
         # recreate pandas from vectors (in case vectors have changed)
         self.df = pd.DataFrame(self.data, index=self.data['datetime'])
-        self.tf = pd.DataFrame(self.trades)
-        self.oo = pd.DataFrame(self.orders_open)
-        self.cc = pd.DataFrame(self.orders_closed)
-        self.CUM_MARGIN = pd.DataFrame({'datetime': self.data['datetime'], 'margin': self.cum_margin}).set_index('datetime')
-        self.CUM_PNL = self.tf[['pnl']].cumsum().rename(columns={'pnl':'cum_pnl'}).shift(1).fillna(0)
+        self.tf = pd.DataFrame(self.l_trades)
+        self.oo = pd.DataFrame(self.l_orders_open)
+        self.cc = pd.DataFrame(self.l_orders_closed)
+        self.df_cum_margin = pd.DataFrame({'datetime': self.data['datetime'], 'margin': self.l_cum_margin}).set_index('datetime')
+        self.df_cum_pnl = self.tf[['pnl']].cumsum().rename(columns={'pnl':'cum_pnl'}).shift(1).fillna(0)
         
         # calculate performance metrics
         profitable_trades = self.tf.loc[self.tf['pnl']>0]
@@ -336,6 +494,8 @@ class Strategy:
         self.SORTINO_RATIO_DAILY = sortino(self.tf, type="daily")
         self.SORTINO_RATIO_ANNUAL = self.SORTINO_RATIO_DAILY * np.sqrt(252) 
 
+   
+
     @final
     def _check_market_sltp(self, i):
 
@@ -345,41 +505,42 @@ class Strategy:
         """
 
         # open market orders
-        order_market = [o for o in self.orders_open if o['type'] == 'market']
+        order_market = [o for o in self.l_orders_open if o['type'] == 'market']
 
         for order in order_market:
 
-            #retreive trade id VALUE
+            # -------- Retrive order id ---------
             trade_id = order['trade_id'] 
-            order_sl = next(o for o in self.orders_open if o['trade_id']==trade_id and o['type'] =='sl') # return List of sl orders for order id
-            order_tp = next(o for o in self.orders_open if o['trade_id']==trade_id and o['type'] =='tp') # return List of tp orders for order id
-
-            #retrieve side
+            order_sl = next(o for o in self.l_orders_open if o['trade_id']==trade_id and o['type'] =='sl') # return List of sl orders for order id
+            order_tp = next(o for o in self.l_orders_open if o['trade_id']==trade_id and o['type'] =='tp') # return List of tp orders for order id
             order_side = order['side']
             qty = order['qty']
 
-            ## ====== LONG/SHORT TP CONDITION ======
+            ## -------- LONG/SHORT TP CONDITION -------
             # = (exit price - entry price) * qty * leverage - fee * qty
             if order_side == "buy":
-                # buy: candle high >= tp tprice
                 tp_condition = self.data['high'][i] >= order_tp['price']
-                tp_pnl = (order_tp['price'] - order['price']) * qty*self.LEVERAGE - (self.FEE * qty)
-                sl_pnl = (order_sl['price'] - order['price']) * qty*self.LEVERAGE - (self.FEE * qty)
+                sl_condition = self.data['low'][i] <= order_sl['price']
+                tp_pnl = (order_tp['price'] - order['price']) * qty*self.LEVERAGE
+                sl_pnl = (order_sl['price'] - order['price']) * qty*self.LEVERAGE
             else:
-                # sell: candle low <= tp price
                 tp_condition = self.data['low'][i] <= order_tp['price']
-                tp_pnl = (order['price'] - order_tp['price']) * qty*self.LEVERAGE - (self.FEE * qty)
-                sl_pnl = (order['price'] - order_sl['price']) * qty*self.LEVERAGE - (self.FEE * qty)
+                sl_condition = self.data['high'][i] >= order_sl['price']
+                tp_pnl = (order['price'] - order_tp['price']) * qty*self.LEVERAGE
+                sl_pnl = (order['price'] - order_sl['price']) * qty*self.LEVERAGE
 
-            ## ====== TL HIT ======
+            ## -------- TL HIT --------
             if tp_condition: 
-            
+        
                 # update signals and counters
+                average_price = (order['price'] + order_tp['price'])/2
+                fee = self._fee(qty,average_price)
+                
                 self.OPEN_LIMIT_ORDERS -=2
                 self.OPEN_ORDERS -=1
                 self.OPEN_TRADES -=1
-                previous_margin = self.MARGIN
-                self.MARGIN += tp_pnl
+                previous_margin = self.ACTIVE_MARGIN
+                self.ACTIVE_MARGIN += tp_pnl-fee
                 
                 if order_side =='buy':
                     self.WINS_LONG +=1
@@ -389,27 +550,27 @@ class Strategy:
                     self.TOTAL_WINS +=1
 
                 # add trade order record
-                
-                self.trades.append({    'trade_id': trade_id,
+                self.l_trades.append({  'trade_id': trade_id,
                                         'entry_time': order['entry_time'],
                                         'exit_time': self.data['datetime'][i], 
                                         'entry_price': order['price'], 
                                         'exit_price': order_tp['price'], 
-                                        'side': 'sell', 
+                                        'side': order_side, 
                                         'qty': qty, 
                                         'filled': qty, 
                                         'sl': order_sl['price'], 
                                         'tp': order_tp['price'], 
-                                        'pnl':tp_pnl,
-                                        'margin': self.MARGIN,
-                                        'return': tp_pnl/(previous_margin) if previous_margin !=0 else 0,
-                                        'fee':self.FEE * qty, 
+                                        'raw_pnl': tp_pnl, 
+                                        'fee': fee, 
+                                        'pnl':tp_pnl - fee,
+                                        'margin': self.ACTIVE_MARGIN,
+                                        'return': (tp_pnl - fee)/(previous_margin) if previous_margin !=0 else 0,
                                         'comments': ''})
                 
                 # remove from open_orders
-                self.orders_open.remove(order)
-                self.orders_open.remove(order_sl)
-                self.orders_open.remove(order_tp)
+                self.l_orders_open.remove(order)
+                self.l_orders_open.remove(order_sl)
+                self.l_orders_open.remove(order_tp)
 
                 # add to closed_orders
                 order['filled'] = 1
@@ -419,55 +580,48 @@ class Strategy:
                 order_tp['filled'] = 1
                 order_tp['entry_time'] = self.data['datetime'][i]
                 
-                self.orders_closed.append(order)
-                self.orders_closed.append(order_sl)
-                self.orders_closed.append(order_tp)
+                self.l_orders_closed.append(order)
+                self.l_orders_closed.append(order_sl)
+                self.l_orders_closed.append(order_tp)
                 continue
                 
-            ## ====== LONG/SHORT SL CONDITION ======
-            if order_side == "buy":
-                # buy: candle low <= sl price
-                sl_condition = self.data['low'][i] <= order_sl['price']
-            else:
-                # sell: candle high >= sl price
-                sl_condition = self.data['high'][i] >= order_sl['price']
 
-            ## ====== (BUY) SL HIT ======
+            # -------- SL HIT --------
             if sl_condition:
 
                 # update signals and counters
+                average_price = (order['price'] + order_sl['price'])/2
+                fee = self._fee(qty,average_price)
+                
                 self.OPEN_LIMIT_ORDERS -=2
                 self.OPEN_ORDERS -=1
                 self.OPEN_TRADES -=1
-                previous_margin = self.MARGIN
-                self.MARGIN += sl_pnl
+                previous_margin = self.ACTIVE_MARGIN
+                self.ACTIVE_MARGIN += sl_pnl-fee
 
-                if order_side =='buy':
-                    pass
-                else: 
-                    pass
 
                 # add trade order record
-                self.trades.append({    'trade_id': trade_id,
+                self.l_trades.append({  'trade_id': trade_id,
                                         'entry_time': order['entry_time'],
                                         'exit_time': self.data['datetime'][i], 
                                         'entry_price': order['price'], 
                                         'exit_price': order_sl['price'], 
-                                        'side': 'sell', 
+                                        'side': order_side, 
                                         'qty': qty, 
                                         'filled': qty, 
                                         'sl': order_sl['price'], 
                                         'tp': order_tp['price'], 
-                                        'pnl':sl_pnl,
-                                        'margin': self.MARGIN,
-                                        'return': sl_pnl/(previous_margin) if previous_margin !=0 else 0,
-                                        'fee':self.FEE * qty,
+                                        'raw_pnl': sl_pnl,
+                                        'fee':fee,
+                                        'pnl':sl_pnl-fee,
+                                        'margin': self.ACTIVE_MARGIN,
+                                        'return': (sl_pnl-fee)/(previous_margin) if previous_margin !=0 else 0,
                                         'comments': ''})
                         
                 #move remove from open_orders
-                self.orders_open.remove(order)
-                self.orders_open.remove(order_sl)
-                self.orders_open.remove(order_tp)
+                self.l_orders_open.remove(order)
+                self.l_orders_open.remove(order_sl)
+                self.l_orders_open.remove(order_tp)
 
                 # add to closed_orders
                 order['filled'] = 1
@@ -478,128 +632,16 @@ class Strategy:
                 order_sl['filled'] = 1
                 order_sl['entry_time'] = self.data['datetime'][i]
 
-                self.orders_closed.append(order)
-                self.orders_closed.append(order_sl)
-                self.orders_closed.append(order_tp)
+                self.l_orders_closed.append(order)
+                self.l_orders_closed.append(order_sl)
+                self.l_orders_closed.append(order_tp)
                 continue
 
 
 
 if __name__ == "__main__":
 
-    pd.set_option("display.max_columns", None)
-
-    # ==== CONSTANTS =====
-
-    SMA_SLOW = 50
-    SMA_FAST = 20
-    RR = 2
-
-    # ==== DATA AND INDICATORS =====
-    df = load_yfinance("MNQ=F", start="2025-08-16", end="2025-09-16", interval="5m")
-
-    #help(talib.SMA)
-    df['SMA_slow'] = ta.SMA(df, timeperiod=SMA_SLOW)
-    df['SMA_fast'] = ta.SMA(df, timeperiod=SMA_FAST)
-    df['crossover'] = pta.cross(df['SMA_fast'], df['SMA_slow'])
-    df['crossunder'] = pta.cross(df['SMA_slow'], df['SMA_fast'])
-    df['NY'] = sessions(df)['NY']
-    df['vwap'] = vwap(df, mode="daily")
-
-    # ==== STRATEGY EXECUTION =====
-
-
-    class strat1(Strategy):
-
-        # ===== BUY LOGIC =====
-        def buy_condition(self, i):
-            
-            return self.data['crossover'][i] > 0 and self.OPEN_TRADES < 1
-
-        
-        def buy_action(self, i):
-            
-            pre_i = max(0, i-1)
-            rr = RR
-            sl = self.data['high'][pre_i] - self.data['low'][pre_i]
-            tp = sl * rr
-
-            self.bracket_order(i,'buy', 10, sl_pips=sl, tp_pips=tp, comments='BBB')
-            
-            return 
-        
-        # ===== SELL LOGIC =====
-        def sell_condition(self, i):
-            
-            return self.data['crossunder'][i] > 0 and self.OPEN_TRADES < 1
-        
-        def sell_action(self, i):
-        
-            pre_i = max(0, i-1)
-            rr = RR
-            sl = self.data['high'][pre_i] - self.data['low'][pre_i]
-            tp = sl * rr
-
-            self.bracket_order(i,'sell', 10, sl_pips=sl, tp_pips=tp, comments='SSS')
-            
-            return 
-    
-    
-    st = strat1(df)
-    st.FEE = 1.74
-    st.LEVERAGE = 2
-
-    st.execute()
-
-
-    # ==== PLOTTING VISUALS =====
-
-    
-    ax, ax2 = fplt.create_plot('MNQ Chart', rows=2)
-    fplt.volume_ocv(df[['open', 'close', 'volume']], ax=ax.overlay())
-    fplt.candlestick_ochl(df, ax = ax) 
-    #fplt.set_y_range(1.0, 1.2, ax=ax2)
-    #fplt.set_y_scale('log', ax=ax2)
-
-    pront.info(st.tf.head(20))
-
-    fplt.add_line((df.index[0], st.STARTING_MARGIN), (df.index[-1], st.STARTING_MARGIN), ax = ax2, color="#130000", style="--")
-    fplt.plot(st.CUM_MARGIN, ax=ax2, color="#ff6a00", legend="cumulative Pnl")
-
-    pront.info(st.CUM_PNL.head(20))
-
-    fplt.plot(df['SMA_slow'] , ax=ax, color="#ff6a00", legend=f"SMA {SMA_SLOW}")
-    fplt.plot(df['SMA_fast'] , ax=ax, color="#00ff6a", legend=f"SMA {SMA_FAST}")
-    fplt.plot(df['vwap'], ax=ax, color="#219bec", legend="VWAP")
-
-
-    
-
-    # ==== OUTPUTS =====
-
-    cum_pnl = st.CUM_PNL['cum_pnl']
-
-
-    fig, ax = plt.subplots(figsize=(10,5))
-
-    # Plot dots
-    ax.plot(cum_pnl.index, cum_pnl.values, 'o', color="#ff6a00", markersize=4)
-    ax.plot(cum_pnl.index, cum_pnl.values, '--', color="#ff6a00", label="cumulative PnL")
-    ax.axhline(0, color="#130000", linestyle="--")
-
-    # Labels & legend
-    ax.set_title("Monte Carlo")
-    ax.set_xlabel("Trades")
-    ax.set_ylabel("PnL")
-    ax.legend()
-
-
-
-    fplt.show()
-    plt.show()
-
-
-    print(st.tf['pnl'].sum())
+    pass
 
 
     
