@@ -5,7 +5,6 @@ import ccxt
 import time
 import json
 
-
 try: 
     from .logger import log, stamp, pront
     from .utils import timedelta_to_str
@@ -13,6 +12,7 @@ except ImportError:
     #for running as main script
     from logger import log, stamp, pront
     from utils import timedelta_to_str
+
 
 def load_yfinance(symbol: str, start :str = "2023-01-01", end: str= "2023-12-31", interval: str ="1d") -> pd.DataFrame:
  
@@ -28,77 +28,47 @@ def load_yfinance(symbol: str, start :str = "2023-01-01", end: str= "2023-12-31"
     Returns:
         pd.DataFrame: Always returns a DataFrame (empty if no data).
     """
-    # check there is valid symbol data available
+    # ----- CHECK IF THERE IS A VALID SYMBOL /META DATA FOR IT -----
     if load_symbol(symbol) is None:
-        log.error(f"No symbol data available for: {symbol}, make sure it is in data/symbol_data.json")
         return pd.DataFrame()
 
-    # define file destination
-    dataDir = os.path.join(os.path.dirname(__file__), "..", "data")
-    fileName = f"data_{symbol}_{start}_{end}_{interval}.csv".replace("-", "")
-    filePath = os.path.join(dataDir, fileName)
-
-    # Check if file exists first
-    if os.path.exists(filePath):
-        df = pd.read_csv(filePath, parse_dates=["datetime"], index_col="datetime")
-        df.index = pd.to_datetime(df.index)
-
-        if df.index.tz is None:
-            # Index is tz-naive, so localize
-            df.index = df.index.tz_localize("UTC")
-        else:
-            # Index is tz-aware, so convert
-            df.index = df.index.tz_convert("UTC")
-
-        log.debug(f"File found in data/{fileName} Opening now queen.")
-        log.debug(f"Data from {df.index.tz} {df.index[0]} to {df.index[-1]} of interval {interval}")
+    # ----- CHECK IF FILE EXISTS -----
+    filename = f"yfin_{symbol}_{start}_{end}_{interval}.csv".replace("-", "").replace("/", "-")
+    df = _load_data(filename) 
+    if df is not None:
+        stamp.success(f"✅ Data loaded from data/{filename} Opening now queen.")
         return df
 
-    log.debug(f"Downloading data")
-    df = yf.download(symbol, start=start, end=end, interval=interval)
+    # ----- DOWNLOAD IF NOT -----
+    try:
+        df = yf.download(symbol, start=start, end=end, interval=interval)
+    except Exception as e:
+        log.error(f"❌ Error downloading from yfinance: {e}")
+        return pd.DataFrame()
 
-    # === finplot requires date (or datetime) to be the index ===
-    df.index = pd.to_datetime(df.index)
+    # ----- FORMAT DATA -----
 
+    df.index = pd.to_datetime(df.index) # convert index to datetime
     # remove second column name if it is a MultiIndex, and lowercase all column names
-    # === TA lib needs column names to be lowercase ===
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.droplevel(1)
         df.columns = df.columns.str.lower()
     else:
         df.columns = df.columns.str.lower()
 
-    # === Finplot requires OCHL order ===
-    df = df.reindex(columns=["open", "close", "high", "low", "volume"])
+    df = df.reindex(columns=["open", "close", "high", "low", "volume"]) #prefer OCHL order finplot
 
     # rename index
     df.columns.name = None
     df.reset_index(drop=True)
     df.index.name = "datetime"
-
-
-    if df is None:
-        log.debug(f"Failed to load data for {symbol} from {start} to {end} with interval {interval}.")
-        df = pd.DataFrame()  # Return empty DataFrame if no data
-        df.index = pd.to_datetime(df.index)
-        return df
     
-    else:
-        df.index = pd.to_datetime(df.index)
+    # ----- WRITE TO FILE -----
 
-        if df.index.tz is None:
-            # Index is tz-naive, so localize
-            df.index = df.index.tz_localize("UTC")
-        else:
-            # Index is tz-aware, so convert
-            df.index = df.index.tz_convert("UTC")
+    _write_data(df,filename)
+    stamp.success(f"✅ Data saved to data/{filename}. tz:{df.index.tz} {start} to {end} with {interval} interval")
 
-        log.debug(f"Successfully downloaded {symbol} from {df.index.tz} {start} to {end} of interval {interval}")
-        log.debug(f"Saving to file to {filePath}")
-        # Save to CSV
-        os.makedirs(os.path.dirname(filePath), exist_ok=True)
-        df.to_csv(filePath)
-        return df
+    return df
 
 def load_binance(symbol: str = "BTC/USDT", start: str = "2023-01-01", end: str = "2023-04-30", interval: str = "5m") -> pd.DataFrame:
     """
@@ -113,34 +83,24 @@ def load_binance(symbol: str = "BTC/USDT", start: str = "2023-01-01", end: str =
     Returns:
         pd.DataFrame: Always returns a DataFrame (empty if no data).
     """
-    # mapping for Binance intervals
-    interval_map = {
-        "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
-        "1h": "1h", "2h": "2h", "4h": "4h", "6h": "6h", "8h": "8h", "12h": "12h",
-        "1d": "1d", "3d": "3d", "1w": "1w", "1M": "1M"
-    }
-    if interval not in interval_map:
-        raise ValueError(f"Unsupported interval {interval}")
 
-    # define file destination
-    dataDir = os.path.join(os.path.dirname(__file__), "..", "data")
-    fileName = f"data_{symbol.replace('/', '')}_{start}_{end}_{interval}.csv".replace("-", "")
-    filePath = os.path.join(dataDir, fileName)
+     # ----- check there is valid symbol data available -----
+    if load_symbol(symbol) is None:
+        return pd.DataFrame()
 
-    # if cached file exists
-    if os.path.exists(filePath):
-        df = pd.read_csv(filePath, parse_dates=["datetime"], index_col="datetime")
-        df.index = pd.to_datetime(df.index).tz_convert("UTC")
-        
+    # ----- CHECK IF FILE EXISTS -----
+    filename = f"bin_{symbol}_{start}_{end}_{interval}.csv".replace("-", "").replace("/", "-")
+    df = _load_data(filename) 
+    if df is not None:
+        stamp.success(f"✅ Data loaded from data/{filename} Opening now queen.")
         return df
 
-    log.debug(f"Downloading {symbol} data from Binance")
+    # ----- DOWNLOAD IF NOT -----
 
     # init binance
     exchange = ccxt.binance()
     since = exchange.parse8601(start + "T00:00:00Z")
     end_ts = exchange.parse8601(end + "T00:00:00Z")
-
     all_ohlcv = []
     limit = 1000  # Binance max per fetch
 
@@ -153,58 +113,101 @@ def load_binance(symbol: str = "BTC/USDT", start: str = "2023-01-01", end: str =
         time.sleep(exchange.rateLimit / 1000)  # be nice to the API
 
     if not all_ohlcv:
-        log.error(f"No data returned for {symbol}")
+        log.error(f"❌ No data returned for {symbol}")
         return pd.DataFrame()
 
-    # convert to DataFrame
+    # ----- DOWNLOAD IF NOT -----
+    
     df = pd.DataFrame(all_ohlcv, columns=["datetime", "open", "high", "low", "close", "volume"])
     df["datetime"] = pd.to_datetime(df["datetime"], unit="ms", utc=True)
-    df = df[~df.index.duplicated(keep="last")] # REMOVE DUPLICATES
     df.set_index("datetime", inplace=True)
-
-    # reindex to OCHL order (your convention)
-    df = df.reindex(columns=["open", "close", "high", "low", "volume"])
+    df = df.reindex(columns=["open", "close", "high", "low", "volume"])  # reindex to OCHL order (your convention)
 
     # save
-    os.makedirs(os.path.dirname(filePath), exist_ok=True)
-    df.to_csv(filePath)
-
-    log.debug(f"Saved {symbol} {interval} data to {filePath} ({df.index[0]} → {df.index[-1]})")
+    _write_data(df,filename)
+    stamp.success(f"✅ Data saved to data/{filename}. tz:{df.index.tz} {start} to {end} with {interval} interval")
 
     return df
 
+def _write_data(df: pd.DataFrame, file_name: str):
+
+
+    if df.index.tz is None:
+        # Index is tz-naive, so localize
+        df.index = df.index.tz_localize("UTC")
+    else:
+        # Index is tz-aware, so convert
+        df.index = df.index.tz_convert("UTC")
+
+    file_path = os.path.join(os.path.dirname(__file__), "..", "data", file_name)
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    df.to_csv(file_path)
+
+    return
+
+def _load_data(file_name: str) -> pd.DataFrame:
+
+    # Check if file exists first
+    file_path = os.path.join(os.path.dirname(__file__), "..", "data", file_name)
+
+    if os.path.exists(file_path):
+        df = pd.read_csv(file_path, parse_dates=["datetime"], index_col="datetime")
+        df.index = pd.to_datetime(df.index)
+        df.index = df.index.tz_convert("UTC")
+        return df
+    else:
+        return None
 
 def load_symbol(symbol: str):
 
+    '''
+    returns symbol metadata if it exists in data_symbols.json
+    else returns None
+    '''
+
+    if not symbol in get_symbol_list():  
+        return None
+
     # file path
-    json_path = os.path.join(os.path.dirname(__file__), "..", "data", "symbol_data.json")
-    if not os.path.exists(json_path):
-        log.error(f"Symbols file not found at {json_path}")
-        return None
-    
-    # laod json
-    try:
-        with open(json_path, "r") as f:
-            symbols = json.load(f)
-            if symbol not in symbols:
-                log.error(f"Symbol {symbol} not found in symbols file.")
-                return None
-    except Exception as e:
-        log.error(f"Error decoding JSON from symbols file at {json_path}: {e}")
-        return None
-    
+    json_path = os.path.join(os.path.dirname(__file__), "..", "data_symbols", "data_symbols.json")
+    symbols = load_json(json_path)
     return symbols.get(symbol)
+
+def load_json(file_path: str):
+
+    if not os.path.exists(file_path):
+        log.error(f"File not found at {file_path}")
+        return None
+    try:
+        with open(file_path, "r") as f:
+            data = json.load(f)
+            return data
+    except Exception as e:
+        log.error(f"Error decoding JSON from file at {file_path}: {e}")
+        return None
+
+def add_symbol_to_json(data):
+
+    json_path = os.path.join(os.path.dirname(__file__), "..", "data_symbols", "data_symbols.json")
+    symbols = load_json(json_path)
+
+    return
+
+def get_symbol_list():
+    json_path = os.path.join(os.path.dirname(__file__), "..", "data_symbols", "data_symbols.json")
+    symbols = load_json(json_path)
+    return list(symbols.keys())
 
 
 if __name__ == "__main__":
 
 
     ticker = load_symbol("MNQ=F")
-    df = load_yfinance(ticker['symbol'], start="2025-08-16", end="2025-09-16", interval="5m")
-    #df = load_binance("BTC/USDT", start="2023-01-01", end="2023-02-01", interval="5m")
+    #df = load_yfinance("MNQ=F", start="2025-08-16", end="2025-09-16", interval="5m")
+    df = load_binance("BTC/USDT", start="2023-01-01", end="2023-02-01", interval="5m")
 
-    time_step = df.index.to_series().diff().dropna().min()
-
-    print(ticker)
-    print(f"Minimum time step: {time_step}")
-    print(f"Minimum time step: {timedelta_to_str(time_step)}")
+    
+    
+    #print(load_symbol("MNQ=F"))
+    
+    

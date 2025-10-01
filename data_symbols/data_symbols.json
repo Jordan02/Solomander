@@ -1,0 +1,47 @@
+{
+    "BTC/USDT": {
+        "symbol": "BTC/USDT",
+        "name": "BTC/USDT SPOT",
+        "type": "crypto",
+        "tick_currency": "USDT",
+        "tick_size": 0.01,
+        "tick_price": 0.01,
+        "tick_spread": 0,
+        "point_slippage": 0.2,
+        "lot_currency": "BTC",
+        "lot_min_size": 1e-05,
+        "lot_increment": 1e-05,
+        "fee_type": "percent",
+        "fee_value": 0.001
+    },
+    "MNQ=F": {
+        "symbol": "MNQ=F",
+        "name": "MNQ",
+        "type": "futures",
+        "tick_currency": "USD",
+        "tick_size": 0.25,
+        "tick_price": 0.5,
+        "point_slippage": 1.0,
+        "tick_spread": 0,
+        "lot_currency": "contracts",
+        "lot_increment": 1,
+        "lot_min_size": 1,
+        "fee_type": "fixed",
+        "fee_value": 0.87
+    },
+    "US100.cash": {
+        "symbol": "US100.cash",
+        "name": "NASDAQ 100 Index, Spot CFD",
+        "type": "CFD",
+        "tick_currency": "USD",
+        "tick_size": 0.01,
+        "tick_price": 0.0074168570326638384,
+        "tick_spread": 150,
+        "point_slippage": 0.5,
+        "lot_currency": "contracts",
+        "lot_increment": 0.01,
+        "lot_min_size": 0.01,
+        "fee_type": "fixed",
+        "fee_value": 0
+    }
+}

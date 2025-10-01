@@ -75,6 +75,7 @@ def random_color(alpha=1.0):
     return "#{:06x}{:02x}".format(rgb, a)
 
 def timedelta_to_str(td: pd.Timedelta) -> str:
+
     minutes = int(td.total_seconds() // 60)
     if minutes % 60 == 0:   # exact hours
         return f"{minutes//60}h"
@@ -82,3 +83,10 @@ def timedelta_to_str(td: pd.Timedelta) -> str:
         return f"{minutes//1440}d"
     else:
         return f"{minutes}m"
+    
+def print_boxed_title(title):
+    
+    line = "═" * (len(title) + 4)
+    pront.info(f"╔{line}╗")
+    pront.info(f"║  {title}  ║")
+    pront.info(f"╚{line}╝")

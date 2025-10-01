@@ -13,8 +13,11 @@ import os
 # Every level above is shown
 
 SHOW_LEVEL = 49
+SUCCESS_LEVEL = 35
 logging.addLevelName(SHOW_LEVEL, "SHOW")
+logging.addLevelName(SUCCESS_LEVEL, "SUCCESS")
 logging.SHOW = SHOW_LEVEL
+logging.SUCCESS = SUCCESS_LEVEL
 
 log_level   = logging.DEBUG
 stamp_level = logging.DEBUG
@@ -24,6 +27,8 @@ pront_level = logging.DEBUG
 COLORS = {
         'blue': '\033[94m',    # Blue
         'green': '\033[92m',     # Green
+        'neon_green': '\033[38;5;46m',
+        'lime': '\033[38;5;118m',  # lime
         'yellow': '\033[93m',  # Yellow
         'red': '\033[91m',    # Red
         'bold_red': '\033[1;91m', # Bold Red
@@ -40,21 +45,26 @@ class CustomLogger(logging.Logger):
     def show(self, msg, *args, **kwargs):
         if self.isEnabledFor(SHOW_LEVEL):
             self._log(SHOW_LEVEL, msg, args, stacklevel=2,**kwargs)
+    
+    # custom calls for stamp.sucess()
+    def success(self, msg, *args, **kwargs):
+        if self.isEnabledFor(SUCCESS_LEVEL):
+            self._log(SUCCESS_LEVEL, msg, args, stacklevel=2,**kwargs)
 
 class CustomFormatter(logging.Formatter):
 
     LEVEL_COLORS = {
-        logging.DEBUG: COLORS['green'],
-        logging.INFO: COLORS['blue'],
-        logging.WARNING: COLORS['yellow'],
-        logging.ERROR: COLORS['red'],
-        logging.CRITICAL: COLORS['bold_red'],
-        logging.SHOW: COLORS['white'],
+        logging.DEBUG: COLORS['magenta'],          #10
+        logging.INFO: COLORS['blue'],            #20 
+        logging.WARNING: COLORS['yellow'],       #30
+        logging.SUCCESS: COLORS['lime'],        #35
+        logging.ERROR: COLORS['red'],            #40
+        logging.SHOW: COLORS['white'],           #49
+        logging.CRITICAL: COLORS['bold_red']     #50
     }
 
     def format(self, record):
         
-
         color = self.LEVEL_COLORS.get(record.levelno, COLORS['white']) # set color
 
         #custom time
@@ -131,7 +141,7 @@ def set_log_level(all=None, log_level=None, stamp_level=None, pront_level=None):
 
 if __name__ == '__main__':
     
-    set_log_level(log_level=49)
+    set_log_level(log_level=10)
 
     log.debug("debug")
     log.info("info")
@@ -140,6 +150,7 @@ if __name__ == '__main__':
     log.critical("critical")
     stamp.info("info")
     stamp.show("hello")
+    stamp.success("success")
    
     
     

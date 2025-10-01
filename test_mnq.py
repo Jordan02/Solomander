@@ -3,6 +3,9 @@ from solomander.logger import log, stamp, pront
 from solomander.strategy import Strategy
 from matplotlib import pyplot as plt
 from scipy.stats import skewnorm, norm
+import MetaTrader5 as mt5
+from dotenv import load_dotenv
+import os
 
 import pandas as pd
 import finplot as fplt
@@ -14,14 +17,27 @@ import optuna
 import optuna.visualization as vis
 import optuna.visualization.matplotlib as vism
 
-
 pd.set_option("display.max_columns", None)
 
 
+
+SYMBOL = "US100.cash"
+
+s.mt5_login()
+ticker = s.mt5_symbol_info(SYMBOL)
+df = s.mt5_hdata(SYMBOL, mt5.TIMEFRAME_M5, lookback=4000)
+
+#df = s.load_yfinance(SYMBOL, start="2025-08-16", end="2025-09-16", interval="5m")
+#ticker = s.load_symbol(SYMBOL)
+
+
+print(df.head(10))
+
+
 # ==== DATA AND INDICATORS =====
-df = s.load_yfinance("MNQ=F", start="2025-08-16", end="2025-09-16", interval="5m")
+
+
 df['NY'] = s.sessions(df)['NY']
-df['vwap'] = s.vwap(df, mode="daily")
 df['atr'] = ta.ATR(df, timeperiod=14)
 
 
@@ -39,8 +55,7 @@ class strat1(Strategy):
     SIZE: float
 
     # ===== SET STRATEGY PARAMETERS =====
-    def __init__(self, df : pd.DataFrame, **kwargs):
-        super().__init__(df, **kwargs)
+    def add_market_data(self):
 
         # update only those that are dynamic during optimsation, fix others outside
         self.df['SMA_slow'] = ta.SMA(self.df['close'], timeperiod=self.SMA_SLOW)
@@ -49,6 +64,7 @@ class strat1(Strategy):
         self.df['crossunder'] = pta.cross(self.df['SMA_slow'], self.df['SMA_fast'])
 
         return
+
         
     # ===== BUY LOGIC =====
     def buy_condition(self, i):
@@ -60,7 +76,7 @@ class strat1(Strategy):
         pre_i = max(0, i)
         sl = self.data['atr'][pre_i]*self.ATR_MULTIPLIER
         tp = sl * self.RR
-        self.bracket_order(i,'buy', self.SIZE, sl_pips=sl, tp_pips=tp, comments='B')
+        self.buy_bracket(i, self.SIZE, sl_pips=sl, tp_pips=tp, comments='B')
         return 
     
     # ===== SELL LOGIC =====
@@ -74,7 +90,7 @@ class strat1(Strategy):
         pre_i = max(0, i)
         sl = self.data['atr'][pre_i]*self.ATR_MULTIPLIER
         tp = sl * self.RR
-        self.bracket_order(i,'sell', self.SIZE, sl_pips=sl, tp_pips=tp, comments='S')
+        self.sell_bracket(i, self.SIZE, sl_pips=sl, tp_pips=tp, comments='S')
         return 
 
     # ===== Visualization =====
@@ -84,83 +100,40 @@ class strat1(Strategy):
 
         fplt.plot(self.df['SMA_slow'] , ax=self.axs[0], color="#ff6a00", legend=f"SMA {self.SMA_SLOW}")
         fplt.plot(self.df['SMA_fast'] , ax=self.axs[0], color="#00ff6a", legend=f"SMA {self.SMA_FAST}")
-        fplt.plot(self.df['vwap'], ax=self.axs[0], color="#219bec", legend="VWAP")
         fplt.plot(self.df['atr'], ax=self.axs[1], color="#00ff6a", legend="ATR")
 
         s.plot_timeband(self.df, 'NY', ax=self.axs[0], color="#a8a8a83d", title="NY")
 
 
-# ==== OPTIMISATION =====
 
-pnl_curve = []
-display_values = []
+# ==== OPTIMIZATION =====
 
-def objective(trial):
 
-    # Define the hyperparameters to optimize
-    atr_multiplier = trial.suggest_float("atr_multiplier", 1.0, 3.0)
-    sma_fast = trial.suggest_int("sma_fast", 6, 30)
-    sma_slow = trial.suggest_int("sma_slow", 40, 60)
+# ==== EXECUTION =====
 
-    # Create and run the strategy
-    st = strat1(  df, 
-                  FEE = 1.74, 
-                  LEVERAGE = 2,
-                  ATR_MULTIPLIER=atr_multiplier, 
-                  RR=1.5, 
-                  SMA_FAST=sma_fast, 
-                  SMA_SLOW=sma_slow,
-                  SIZE=1 )
-    
-    st.execute()
-
-    pnl_curve.append(st.tf['pnl'].cumsum().to_numpy())
-    display_values.append({  "atr_multiplier": atr_multiplier, 
-                             "sma_fast": sma_fast,
-                             "sma_slow": sma_slow, 
-                             "mdd": st.MAX_DRAWDOWN, 
-                             "sr": st.SHARPE_RATIO_ANNUAL,
-                             "pnl": st.PNL})
-
-    return st.SHARPE_RATIO_ANNUAL
 
 #guess_1={"atr_multiplier": 1.83, "sma_fast": 6, "sma_slow": 46}
-guess_1={"atr_multiplier": 2.17, "sma_fast": 11.0, "sma_slow": 55}
-guess_2={"atr_multiplier": 1.33, "sma_fast": 15, "sma_slow": 51}
-guess_3={"atr_multiplier": 1.22, "sma_fast": 16, "sma_slow": 52} # 5-15SR best so far
-
-best_params = guess_3
-
-if 0:
-    study = s.Optimise( objective,
-                        n_trials=200, 
-                        n_jobs=1, 
-                        guess=[guess_1,guess_2,guess_3], 
-                        direction = 'maximize',
-                        target="Sharpe Ratio")
-    best_params = study.execute()
-    study.show(pnl_curves=pnl_curve, info=display_values)
-
+test_params={"atr_multiplier": 1.12, "sma_fast": 8, "sma_slow": 45} # 5-15SR best so far
 
 st = strat1(df,
-            FEE=1.74, 
-            LEVERAGE = 2,
-            ATR_MULTIPLIER= best_params['atr_multiplier'],
+            ticker,
+            ATR_MULTIPLIER= test_params['atr_multiplier'],
             RR=1.5,
-            SMA_FAST= best_params['sma_fast'],
-            SMA_SLOW= best_params['sma_slow'],
-            SIZE=1)
+            SMA_FAST= test_params['sma_fast'],
+            SMA_SLOW= test_params['sma_slow'],
+            SIZE=4)
 
-# ATR_MULTIPLIER=1.83 SMA_FAST=6 SMA_SLOW=46
 
 st.execute()
-#st.show()
+st.show()
 st.print_metrics()
 
-test_params={'SMA_FAST':1,'SMA_SLOW':1}
+#test_params={'SMA_FAST':1,'SMA_SLOW':1}
 #test_params={'ATR_MULTIPLIER':0.01, 'RR': 0.02}
 #s.monte_carlo(st.tf, runs=300, mode='bootstrap', seed=156, params=st.INPUT_PARAMS)
-s.noise_test(st, test_params=test_params, nudges=3)
+#s.noise_test(st, test_params=test_params, nudges=3)
+print(st.tf)
+
 
 plt.show()
 

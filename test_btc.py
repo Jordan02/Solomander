@@ -69,7 +69,8 @@ class strat1(Strategy):
     # ===== BUY LOGIC =====
     def buy_condition(self, i):
         time_cond = self.data['NY'][i] > 0 # in ny session 
-        return self.data['crossover'][i] > 0 and self.OPEN_TRADES < 3
+        ##and self.OPEN_TRADES < 3
+        return self.data['crossover'][i] > 0 
 
     def buy_action(self, i):
         
@@ -84,7 +85,8 @@ class strat1(Strategy):
     def sell_condition(self, i):
 
         time_cond = self.data['NY'][i] > 0 # in ny session  
-        return self.data['crossunder'][i] > 0 and self.OPEN_TRADES < 3
+        ##and self.OPEN_TRADES < 3
+        return self.data['crossunder'][i] > 0 
     
     def sell_action(self, i):
     
@@ -142,21 +144,25 @@ def objective(trial):
 
 #guess_1={"atr_multiplier": 1.83, "sma_fast": 6, "sma_slow": 46}
 guess_2={"atr_multiplier": 1.04, "sma_fast": 6, "sma_slow": 58}
-guess_3={"atr_multiplier": 1.22, "sma_fast": 16, "sma_slow": 52} # 5-15SR best so far
-guess_4={"atr_multiplier": 1.04, "sma_fast": 6, "sma_slow": 42} # 5-15SR best so far
-best_params = guess_4
+guess_3={"atr_multiplier": 2.17, "sma_fast": 11, "sma_slow": 55} # 5-15SR best so far
+guess_4={"atr_multiplier": 1.12, "sma_fast": 8, "sma_slow": 45} # 5-15SR best so far
+guess_5={"atr_multiplier": 1.23, "sma_fast":16, "sma_slow": 52} # 5-15SR best so far
 
 
-if 1:
+
+if 0:
     study = s.Optimise( objective,
-                        n_trials=200, 
+                        n_trials=400, 
                         n_jobs=1, 
-                        guess=[guess_2], 
+                        guess=[guess_2, guess_4], 
                         direction = 'maximize',
                         target="Sharpe Ratio")
     best_params = study.execute()
     study.show(pnl_curves=pnl_curve, info=display_values)
 
+
+#best_params = {"atr_multiplier": 4, "sma_fast": 4, "sma_slow": 24}
+best_params = guess_4
 
 st = strat1(df,
             ticker,
