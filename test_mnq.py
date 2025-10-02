@@ -1,6 +1,7 @@
 import solomander as s
 from solomander.logger import log, stamp, pront
 from solomander.strategy import Strategy
+from solomander.backtester import Backtester
 from matplotlib import pyplot as plt
 from scipy.stats import skewnorm, norm
 import MetaTrader5 as mt5
@@ -25,7 +26,7 @@ SYMBOL = "US100.cash"
 
 s.mt5_login()
 ticker = s.mt5_symbol_info(SYMBOL)
-df = s.mt5_hdata(SYMBOL, mt5.TIMEFRAME_M5, lookback=4000)
+df = s.mt5_hdata(SYMBOL, mt5.TIMEFRAME_M5, candle_lookback=4000)
 
 #df = s.load_yfinance(SYMBOL, start="2025-08-16", end="2025-09-16", interval="5m")
 #ticker = s.load_symbol(SYMBOL)
@@ -43,7 +44,7 @@ df['atr'] = ta.ATR(df, timeperiod=14)
 
 # ==== STRATEGY EXECUTION =====
 
-class strat1(Strategy):
+class strat1(Backtester):
 
     # add Input and settings here, so they can be intellisensed
     FEE: float
@@ -55,7 +56,7 @@ class strat1(Strategy):
     SIZE: float
 
     # ===== SET STRATEGY PARAMETERS =====
-    def add_market_data(self):
+    def update_data(self):
 
         # update only those that are dynamic during optimsation, fix others outside
         self.df['SMA_slow'] = ta.SMA(self.df['close'], timeperiod=self.SMA_SLOW)
@@ -65,7 +66,6 @@ class strat1(Strategy):
 
         return
 
-        
     # ===== BUY LOGIC =====
     def buy_condition(self, i):
         time_cond = self.data['NY'][i] > 0 # in ny session 
@@ -73,8 +73,7 @@ class strat1(Strategy):
 
     def buy_action(self, i):
         
-        pre_i = max(0, i)
-        sl = self.data['atr'][pre_i]*self.ATR_MULTIPLIER
+        sl = self.data['atr'][i]*self.ATR_MULTIPLIER
         tp = sl * self.RR
         self.buy_bracket(i, self.SIZE, sl_pips=sl, tp_pips=tp, comments='B')
         return 
@@ -87,8 +86,7 @@ class strat1(Strategy):
     
     def sell_action(self, i):
     
-        pre_i = max(0, i)
-        sl = self.data['atr'][pre_i]*self.ATR_MULTIPLIER
+        sl = self.data['atr'][i]*self.ATR_MULTIPLIER
         tp = sl * self.RR
         self.sell_bracket(i, self.SIZE, sl_pips=sl, tp_pips=tp, comments='S')
         return 
@@ -114,6 +112,9 @@ class strat1(Strategy):
 
 #guess_1={"atr_multiplier": 1.83, "sma_fast": 6, "sma_slow": 46}
 test_params={"atr_multiplier": 1.12, "sma_fast": 8, "sma_slow": 45} # 5-15SR best so far
+
+
+
 
 st = strat1(df,
             ticker,

@@ -8,7 +8,8 @@ from .analysis import monte_carlo, monte_carlo_metric, _plot_histogram, noise_te
 from .optimsation import Optimise
 from .utils import sharpe, sortino, max_drawdown, random_color, timedelta_to_str, print_boxed_title
 from .mt5 import mt5_symbol_info, mt5_login, mt5_ensure_login, mt5_hdata
-#from .optimsation import
+from .backtester import Backtester
+
 
 #turn off gay qt warnings in console
 import os
@@ -23,7 +24,8 @@ __all__ = [
     "monte_carlo", "monte_carlo_metric", "_plot_histogram", "noise_test",
     "Optimise",
     "sharpe", "sortino", "max_drawdown", "random_color", "timedelta_to_str", "print_boxed_title",
-    "mt5_symbol_info", "mt5_login", "mt5_ensure_login", "mt5_hdata"
+    "mt5_symbol_info", "mt5_login", "mt5_ensure_login", "mt5_hdata",
+    "Backtester"
 ]
 
 

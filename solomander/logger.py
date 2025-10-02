@@ -14,10 +14,13 @@ import os
 
 SHOW_LEVEL = 49
 SUCCESS_LEVEL = 35
+INPUT_LEVEL = 48
 logging.addLevelName(SHOW_LEVEL, "SHOW")
 logging.addLevelName(SUCCESS_LEVEL, "SUCCESS")
+logging.addLevelName(INPUT_LEVEL, "INPUT")
 logging.SHOW = SHOW_LEVEL
 logging.SUCCESS = SUCCESS_LEVEL
+logging.INPUT = INPUT_LEVEL
 
 log_level   = logging.DEBUG
 stamp_level = logging.DEBUG
@@ -33,7 +36,8 @@ COLORS = {
         'red': '\033[91m',    # Red
         'bold_red': '\033[1;91m', # Bold Red
         'white': '\033[97m',  # White
-        'magenta': '\033[95m'  # Magenta
+        'magenta': '\033[95m',        # Magenta
+        'underline_cyan': '\033[4;38;5;51m'
     }
 
 RESET = '\033[0m'
@@ -51,14 +55,20 @@ class CustomLogger(logging.Logger):
         if self.isEnabledFor(SUCCESS_LEVEL):
             self._log(SUCCESS_LEVEL, msg, args, stacklevel=2,**kwargs)
 
+    # custom calls for stamp.input()
+    def input(self, msg, *args, **kwargs):
+        if self.isEnabledFor(INPUT_LEVEL):
+            self._log(INPUT_LEVEL, msg, args, stacklevel=2,**kwargs)
+
 class CustomFormatter(logging.Formatter):
 
     LEVEL_COLORS = {
-        logging.DEBUG: COLORS['magenta'],          #10
+        logging.DEBUG: COLORS['magenta'],        #10
         logging.INFO: COLORS['blue'],            #20 
         logging.WARNING: COLORS['yellow'],       #30
-        logging.SUCCESS: COLORS['lime'],        #35
+        logging.SUCCESS: COLORS['lime'],         #35
         logging.ERROR: COLORS['red'],            #40
+        logging.INPUT: COLORS['underline_cyan'], #48
         logging.SHOW: COLORS['white'],           #49
         logging.CRITICAL: COLORS['bold_red']     #50
     }

@@ -6,17 +6,22 @@ import time
 import json
 import MetaTrader5 as mt5
 from dotenv import load_dotenv
+import getpass
+import threading
+import time
 
 
 try: 
     from .logger import log, stamp, pront
     from .utils import timedelta_to_str
     from .data import load_symbol, load_json, get_symbol_list, _load_data, _write_data
+    from .strategy import Strategy
 except ImportError: 
     #for running as main script
     from logger import log, stamp, pront
     from utils import timedelta_to_str
     from data import load_symbol, load_json, get_symbol_list, _load_data, _write_data
+    from strategy import Strategy
 
 
 MT5_TIMEFRAMES = {
@@ -70,23 +75,23 @@ def mt5_login() -> bool:
 
 def mt5_ensure_login():
     if mt5.account_info() is None:
-        log.error("❌ MT5 is not initialized. Please call login_mt5() first.")
         return 0
     return 1
 
 def mt5_symbol_info(symbol: str):
     
-    # exit if not logged in
+    # ----- ENSURE LOGIN -----
     if not mt5_ensure_login():
+        log.error("❌ MT5 is not initialized. Please call login_mt5() first.")
         return None
     
-    # exit if data already exisits
+    # ----- READ IF ALREADY DOWLOADED -----
     symbol_info = load_symbol(symbol)
     if symbol_info is not None:
         stamp.success(f"✅ {symbol} info retreived from data_symbols.json")
         return symbol_info
 
-    # otherwisetry to get it from MT5
+    # ----- OTHERWISE DOWNLOAD AND SAVE -----
     try:
         info = mt5.symbol_info(symbol)
     except Exception as e:
@@ -119,10 +124,11 @@ def mt5_symbol_info(symbol: str):
 
     return symbol_info
 
-def mt5_hdata(symbol: str, interval, lookback: int = 1000):
+def mt5_hdata(symbol: str, mt5_time_interval, candle_lookback: int = 1000, candle_offset: int = 0) -> pd.DataFrame:
 
     # ----- ENSURE LOGIN -----
     if not mt5_ensure_login():
+        log.error(f"❌ MT5 is not initialized. Please call login_mt5() first.")
         return pd.DataFrame()
     
     # ----- CHECK IF THERE IS A VALID SYMBOL /META DATA FOR IT -----
@@ -130,41 +136,163 @@ def mt5_hdata(symbol: str, interval, lookback: int = 1000):
         return pd.DataFrame()
 
     # ----- CHECK IF FILE EXISTS -----
-    interval_str = MT5_TIMEFRAMES.get(interval, "unknown")
-    filename = f"mt5_{symbol}_{lookback}c_{interval_str}.csv".replace("-", "").replace("/", "-")
+    interval_str = MT5_TIMEFRAMES.get(mt5_time_interval, "unknown")
+    filename = f"mt5_{symbol}_{candle_lookback}c_{interval_str}.csv".replace("-", "").replace("/", "-")
     df = _load_data(filename) 
     if df is not None:
         stamp.success(f"✅ Data loaded from data/{filename} Opening now queen.")
         return df
 
-    # ----- IF NOT DOWNLOAD DATA -----
+    # ----- IF NOT RETREIVE DATA -----
     try:
         mt5.symbol_select(symbol, True)
-        rates = mt5.copy_rates_from_pos(symbol, interval, 0, lookback)
+        rates = mt5.copy_rates_from_pos(symbol, mt5_time_interval, candle_offset, candle_lookback)
     except Exception as e:
         log.error(f"❌ MT5 download error {symbol}: {e}")
         return pd.DataFrame()
 
     # ----- FORMAT DATA -----
-    df = pd.DataFrame(rates)
+    df = _mt5_format_data(rates)
+
+    # ----- WRITE DATA -----
+    _write_data(df,filename)
+    stamp.success(f"✅ {symbol} saved to data/{filename}. tz: {df.index.tz} {df.index[0].strftime("%d/%m/%y")} to {df.index[-1].strftime("%d/%m/%y")}, {mt5_time_interval} intervals, {candle_lookback} candles ")
+
+    return df 
+
+def _mt5_format_data(mt5_rates) -> pd.DataFrame:
+    
+    df = pd.DataFrame(mt5_rates)
     df['time'] = pd.to_datetime(df['time'], unit='s')
     df.rename(columns={"time": "datetime", "tick_volume": "volume"}, inplace=True)
     df.set_index('datetime', inplace=True)
     df = df.tz_localize('UTC')
 
-    # ----- WRITE DATA -----
-    _write_data(df,filename)
-    stamp.success(f"✅ {symbol} saved to data/{filename}. tz: {df.index.tz} {df.index[0].strftime("%d/%m/%y")} to {df.index[-1].strftime("%d/%m/%y")}, {interval} intervals, {lookback} candles ")
+    return df
 
-    return df 
+
+
+class mt5_live(Strategy):
+
+    def __init__(self, symbol_str, timeframe = mt5.TIMEFRAME_M5, candle_buffer = 500, poll_interval = 5, **kwargs):
+
+        # ----- ENSURE LOGIN and symbol info -----
+        mt5_login()
+
+        # ----- VALIDATION CHECKS -----
+        if load_symbol(symbol_str) is None:
+            log.error(f"❌ {symbol_str} is not a valid symbol.")
+        
+        mt5.symbol_select(symbol_str, True)
+        super().__init__(pd.DataFrame(), mt5_symbol_info(symbol_str))
+        
+        # ----- NEW PARAMETERS -----
+        self.TIME_INTERVAL_MT5 = timeframe
+        self.CANDLE_BUFFER = candle_buffer
+        self.POLL_INTERVAL = poll_interval
+        self.setting_slippage_entry = "off"
+        self.setting_slippage_sl = "off"
+        self.setting_slippage_tp = "off"
+        self.setting_rounding_method = "nearest"
+        self.setting_password = str(os.getenv('MT5_BOT_PASSWORD', '123'))  # default password if not set in .env
+        
+        # ---- THREADING -----
+        self._running = threading.Event()         
+        self.setting_listen_time = 0.25      # seconds between checking for stop command
+
+        # ----- All KWARGS STORED AS PARAMS -----
+        self.INPUT_PARAMS = kwargs
+        self.init_kwargs = kwargs.copy() # store original kwargs for reference
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+        
+        # ----- UPDATES REQUIRED AFTER KWARGS GIVEN -----
+        self.update_data()
+        self.ACTIVE_MARGIN = self.START_MARGIN  # starting margin
+        self._setting_rm_buy      = "ceil" if self.setting_rounding_method == "worst_case" else "round"
+        self._setting_rm_buy_sl   = "floor" if self.setting_rounding_method == "worst_case" else "round"
+        self._setting_rm_buy_tp   = "floor" if self.setting_rounding_method == "worst_case" else "round"
+
+        self._setting_rm_sell     = "floor" if self.setting_rounding_method == "worst_case" else "round"
+        self._setting_rm_sell_sl  = "ceil" if self.setting_rounding_method == "worst_case" else "round"
+        self._setting_rm_sell_tp  = "ceil" if self.setting_rounding_method == "worst_case" else "round"
+
+    def _mt5_fetch_latest(self):
+
+        # ----- RETRIEVE DATA -----
+        try:
+            rates = mt5.copy_rates_from_pos(self.MARKET_SYMBOL, self.TIME_INTERVAL_MT5, 0, self.CANDLE_BUFFER)
+        except Exception as e:
+            log.error(f"❌ MT5 download error {self.MARKET_SYMBOL}: {e}")
+            return pd.DataFrame()
+
+        # ----- FORMAT DATA -----
+        df= _mt5_format_data(rates)
+
+        return df
+
+    def _input_running_listener(self):
+
+        while self._running.is_set():
+            time.sleep(self.setting_listen_time)  #prevent busy wait, be kind to cpu
+            cmd = input().strip().lower()
+            if cmd == "stop":
+                stamp.success("✅ Stop command received.")
+                self._running.clear()
+
+        
+
+    def mt5_stream(self):
+
+        if not self.check_password():
+            stamp.error("❌ Incorrect password. Access denied.")
+            return 
+        
+        # ----- set up stop listener on seperate thread -----
+        self._running.set() #switch on
+        listener = threading.Thread(target=self._input_running_listener, daemon=True)
+        listener.start()
+        stamp.success("✅ Password correct. Generational wealth loading...") 
+        
+        
+        try:
+            while self._running.is_set():
+
+                next_time = time.time()+ self.POLL_INTERVAL
+                
+                # ----- LOOP LOGIC -----
+                self.df = self._mt5_fetch_latest()  # initial fetch to set up
+                stamp.info(f"🔄 close: {self.df['close'].iloc[-1]}")
+
+                
+            
+                # ----- END LOOP LOGIC -----
+                
+                sleep_time = max(0, next_time - time.time())
+                while  sleep_time > 0 and self._running.is_set():
+                    time.sleep(min(self.setting_listen_time,sleep_time))
+                    sleep_time = next_time- time.time()
+
+                   
+        finally:
+            #mt5.shutdown()
+            stamp.success("🛑 Stopping MT5 live data stream...")
+    
+    
+    def check_password(self):
+
+        stamp.input("🔐 Please enter your password to start bot: ")
+        password = getpass.getpass("")
+        if password == self.setting_password: 
+            return True
+        else:
+            return False
 
 if __name__ == "__main__":
-    mt5_login()
 
-    symbol = mt5_symbol_info("US100.cash")
-    
-    df = mt5_hdata("US100.cash", mt5.TIMEFRAME_M5, lookback=1000)
+    bot1 = mt5_live("US100.cash", timeframe=mt5.TIMEFRAME_M5, candle_buffer=500, poll_interval=0.5)
 
-    print(MT5_TIMEFRAMES.get(mt5.TIMEFRAME_M5))
-    print(df.index.tz)
+    bot1.mt5_stream()
 
+    print(bot1.POLL_INTERVAL)
+    print(bot1.SHARPE_RATIO_ANNUAL)
