@@ -15,64 +15,40 @@ try:
     from .data import load_yfinance
     from .utils import max_drawdown, sharpe, sortino, timedelta_to_str, print_boxed_title
     from .visuals import plot_trades
-    from .strategy import Strategy
+    from .baseStrategy import Strategy
 except ImportError:
     from indicators import vwap, timeband, sessions
     from logger import log, stamp, pront
     from data import load_yfinance
     from utils import max_drawdown, sharpe, sortino, timedelta_to_str, print_boxed_title
     from visuals import plot_trades
-    from strategy import Strategy
+    from solomander.baseStrategy import Strategy
 
 
 class Backtester(Strategy):
 
     def __init__(self, df: pd.DataFrame, symbol: dict, **kwargs):
-        super().__init__(df, symbol)
-
-        # ----- NEW PARAMETERS -----
-        self.TIME_INTERVAL     = df.index.to_series().diff().dropna().min()
-        self.TIME_INTERVAL_STR = timedelta_to_str(self.TIME_INTERVAL)
-        self.TEST_DAYS         = max(1, np.busday_count(df.index[0].date(), df.index[-1].date())) # number of business days in test period
-
-        # ----- All KWARGS STORED AS PARAMS -----
-        self.INPUT_PARAMS = kwargs
-        self.init_kwargs = kwargs.copy() # store original kwargs for reference
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-
-        # ----- UPDATES REQUIRED AFTER KWARGS GIVEN -----
-        self.update_data()
-        self.ACTIVE_MARGIN = self.START_MARGIN  # starting margin
-        self._setting_rm_buy      = "ceil" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_buy_sl   = "floor" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_buy_tp   = "floor" if self.setting_rounding_method == "worst_case" else "round"
-
-        self._setting_rm_sell     = "floor" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_sell_sl  = "ceil" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_sell_tp  = "ceil" if self.setting_rounding_method == "worst_case" else "round"
-
-
-    def plots(self, rows=2, **kwargs):
-    
-        boxes=kwargs.get('boxes', False)
-        trade_id=kwargs.get('trade_id', False)
-
-        if rows < 2:
-            stamp.critical("Strategy.plots(): rows must be >=2")
-            return
-
-        self.axs = fplt.create_plot(f"{self.MARKET_NAME}/{self.TIME_INTERVAL_STR} {self.df.index[0]} - {self.df.index[-1]}", rows=rows)
-
-        # standard candles
-        fplt.volume_ocv(self.df[['open', 'close', 'volume']], ax=self.axs[0].overlay())
-        fplt.candlestick_ochl(self.df[['open', 'close', 'high', 'low']], ax=self.axs[0])
-        plot_trades(tf=self.tf, cc=self.cc, timestep=self.TIME_INTERVAL, ax=self.axs[0], boxes=boxes, trade_id=trade_id)
+        super().__init__(df, symbol, **kwargs)
         
-        # PnL chart
-        fplt.add_line((self.df.index[0], self.START_MARGIN), (self.df.index[-1], self.START_MARGIN), ax=self.axs[-1], color="#130000", style="--")
-        fplt.plot(self.df_cum_margin, ax=self.axs[-1], color="#ff6a00", legend="cumulative Pnl")
+         # ----- NEW PARAMETERS -----
+        self.TIME_INTERVAL      = self.df.index.to_series().diff().dropna().min()
+        self.TIME_INTERVAL_STR  = timedelta_to_str(self.TIME_INTERVAL)
+        self.TEST_DAYS          = max(1, np.busday_count(df.index[0].date(), df.index[-1].date())) # number of business days in test period
 
+
+
+    # ------ OVERRIDEN STRATEGY METHODS ------:
+
+    @final
+    def sell_bracket(self, i, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
+        return super().sell_bracket(i, qty, sl_price, tp_price, sl_pips, tp_pips, comments)
+
+    @final
+    def buy_bracket(self, i, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
+        return super().buy_bracket(i, qty, sl_price, tp_price, sl_pips, tp_pips, comments)
+
+
+    # ------ UNIQUE BACKTESTER METHODS ------
     @final
     def execute(self):
 
@@ -137,7 +113,7 @@ class Backtester(Strategy):
     def show(self, **kwargs):
         # CHECK IF ANY ORDERS WERE EXECUTED
         if self.TOTAL_ORDERS == 0:
-            log.warning("No orders were executed. Check your strategy logic.")
+            log.warning("🚩 No orders were executed. Check your strategy logic.")
             return
         
         self.plots(**kwargs)

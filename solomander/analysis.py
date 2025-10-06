@@ -5,11 +5,11 @@ from scipy.stats import norm, skewnorm, skew
 
 try:
     from .logger import log, stamp, pront
-    from .strategy import Strategy
+    from .baseStrategy import Strategy
     from .utils import random_color, max_drawdown, sharpe, sortino
 except ImportError:
     from logger import log, stamp, pront
-    from strategy import Strategy
+    from solomander.baseStrategy import Strategy
     from .utils import random_color, max_drawdown, sharpe, sortino
   
 

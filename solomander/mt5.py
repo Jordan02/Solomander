@@ -9,19 +9,21 @@ from dotenv import load_dotenv
 import getpass
 import threading
 import time
-
+import finplot as fplt
+import talib.abstract as ta
+from typing import final
 
 try: 
     from .logger import log, stamp, pront
     from .utils import timedelta_to_str
     from .data import load_symbol, load_json, get_symbol_list, _load_data, _write_data
-    from .strategy import Strategy
+    from .baseStrategy import Strategy
 except ImportError: 
     #for running as main script
     from logger import log, stamp, pront
     from utils import timedelta_to_str
     from data import load_symbol, load_json, get_symbol_list, _load_data, _write_data
-    from strategy import Strategy
+    from baseStrategy import Strategy
 
 
 MT5_TIMEFRAMES = {
@@ -184,44 +186,129 @@ class mt5_live(Strategy):
             log.error(f"❌ {symbol_str} is not a valid symbol.")
         
         mt5.symbol_select(symbol_str, True)
-        super().__init__(pd.DataFrame(), mt5_symbol_info(symbol_str))
+        market_info = mt5_symbol_info(symbol_str)
+        self.MARKET_SYMBOL = market_info.get('symbol', 'Unknown Symbol')
+        self.TIME_INTERVAL_MT5 = timeframe
+        initial_data = self._mt5_fetch_latest(candle_buffer)
+        
+        super().__init__(initial_data, 
+                         market_info, 
+                         setting_slippage_entry = "off",
+                         setting_slippage_sl = "off",
+                         setting_slippage_tp = "off",
+                         setting_rounding_method = "nearest",
+                         **kwargs
+                        )
+        
         
         # ----- NEW PARAMETERS -----
         self.TIME_INTERVAL_MT5 = timeframe
         self.CANDLE_BUFFER = candle_buffer
         self.POLL_INTERVAL = poll_interval
-        self.setting_slippage_entry = "off"
-        self.setting_slippage_sl = "off"
-        self.setting_slippage_tp = "off"
-        self.setting_rounding_method = "nearest"
         self.setting_password = str(os.getenv('MT5_BOT_PASSWORD', '123'))  # default password if not set in .env
+        self.DEVIATION = 10
         
         # ---- THREADING -----
         self._running = threading.Event()         
         self.setting_listen_time = 0.25      # seconds between checking for stop command
 
-        # ----- All KWARGS STORED AS PARAMS -----
-        self.INPUT_PARAMS = kwargs
-        self.init_kwargs = kwargs.copy() # store original kwargs for reference
-        for key, value in kwargs.items():
-            setattr(self, key, value)
+
+    # ------ OVERIDDEN METHODS ------
+
+    @final
+    def sell_bracket(self, i, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
+        # ------ set levels ------
+        _entry_price = self._round_to_tick(self.data['close'][-1], self._setting_rm_sell)
         
-        # ----- UPDATES REQUIRED AFTER KWARGS GIVEN -----
-        self.update_data()
-        self.ACTIVE_MARGIN = self.START_MARGIN  # starting margin
-        self._setting_rm_buy      = "ceil" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_buy_sl   = "floor" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_buy_tp   = "floor" if self.setting_rounding_method == "worst_case" else "round"
+        try:
+            if tp_pips is not None and sl_pips is not None:
+                _sl_price = self._round_to_tick((_entry_price + sl_pips), self._setting_rm_sell_sl)
+                _tp_price = self._round_to_tick((_entry_price - tp_pips), self._setting_rm_sell_tp)
+            else:
+                _sl_price = self._round_to_tick(sl_price, self._setting_rm_sell_sl)
+                _tp_price = self._round_to_tick(tp_price, self._setting_rm_sell_tp)
+        except Exception as e:
+            log.error(f"Error calculating SL/TP prices: {e}")
 
-        self._setting_rm_sell     = "floor" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_sell_sl  = "ceil" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_sell_tp  = "ceil" if self.setting_rounding_method == "worst_case" else "round"
+        # ------- Call parent logic (handles counters, tracking, etc.) -------
+        super().sell_bracket(i, qty, _sl_price, _tp_price, sl_pips=None, tp_pips=None, comments=comments)
 
-    def _mt5_fetch_latest(self):
+        # ------- Send the MT5 market order -------
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": self.MARKET_SYMBOL,
+            "volume": float(qty),
+            "type": mt5.ORDER_TYPE_SELL,
+            "price": float(self.data['close'][i]),
+            "sl": float(_sl_price),
+            "tp": float(_tp_price),
+            "deviation": self.DEVIATION,
+            "magic": 123456,
+            "comment": comments,
+            "type_filling": mt5.ORDER_FILLING_FOK,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+
+        result = mt5.order_send(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            log.error(f"❌ MT5 SELL order failed: {result.retcode}")
+        else:
+            stamp.success(f"✅ SELL executed at {_entry_price} (sl={_sl_price}, tp={_tp_price})")
+    
+
+    @final
+    def buy_bracket(self, i, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
+        
+
+        # ------ set levels ------
+        _entry_price = self._round_to_tick(self.data['close'][-1], self._setting_rm_buy)
+        
+        try:
+            if tp_pips is not None and sl_pips is not None:
+                _sl_price = self._round_to_tick((_entry_price - sl_pips), self._setting_rm_buy_sl)
+                _tp_price = self._round_to_tick((_entry_price + tp_pips), self._setting_rm_buy_tp)
+            else:
+                _sl_price = self._round_to_tick(sl_price, self._setting_rm_buy_sl)
+                _tp_price = self._round_to_tick(tp_price, self._setting_rm_buy_tp)
+        except Exception as e:
+            log.error(f"Error calculating SL/TP prices: {e}")
+
+        #deviation = int(self.POINT_SLIPPAGE ) if hasattr(self, 'POINT_SLIPPAGE') else 20
+
+        # ------- Call parent logic (handles counters, tracking, etc.) -------
+        super().buy_bracket(i, qty, _sl_price, _tp_price, sl_pips=None, tp_pips=None, comments=comments)
+
+        # ------- Send the MT5 market order -------
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": self.MARKET_SYMBOL,
+            "volume": float(qty),
+            "type": mt5.ORDER_TYPE_BUY,
+            "price": float(self.data['close'][i]),
+            "sl": float(_sl_price),
+            "tp": float(_tp_price),
+            "deviation": self.DEVIATION,
+            "magic": 123456,
+            "comment": comments,
+            "type_filling": mt5.ORDER_FILLING_FOK,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+
+        result = mt5.order_send(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            log.error(f"❌ MT5 BUY order failed: {result.retcode}")
+        else:
+            stamp.success(f"✅ BUY executed at {_entry_price} (sl={_sl_price}, tp={_tp_price})")
+
+
+
+    # ------ UNIQUE MT5 LIVE METHODS ------
+
+    def _mt5_fetch_latest(self, candles: int=1) -> pd.DataFrame:
 
         # ----- RETRIEVE DATA -----
         try:
-            rates = mt5.copy_rates_from_pos(self.MARKET_SYMBOL, self.TIME_INTERVAL_MT5, 0, self.CANDLE_BUFFER)
+            rates = mt5.copy_rates_from_pos(self.MARKET_SYMBOL, self.TIME_INTERVAL_MT5, 0, candles)
         except Exception as e:
             log.error(f"❌ MT5 download error {self.MARKET_SYMBOL}: {e}")
             return pd.DataFrame()
@@ -240,8 +327,6 @@ class mt5_live(Strategy):
                 stamp.success("✅ Stop command received.")
                 self._running.clear()
 
-        
-
     def mt5_stream(self):
 
         if not self.check_password():
@@ -253,7 +338,8 @@ class mt5_live(Strategy):
         listener = threading.Thread(target=self._input_running_listener, daemon=True)
         listener.start()
         stamp.success("✅ Password correct. Generational wealth loading...") 
-        
+
+        self.df = self._mt5_fetch_latest(self.CANDLE_BUFFER)  # initial fetch to set up    
         
         try:
             while self._running.is_set():
@@ -261,11 +347,25 @@ class mt5_live(Strategy):
                 next_time = time.time()+ self.POLL_INTERVAL
                 
                 # ----- LOOP LOGIC -----
-                self.df = self._mt5_fetch_latest()  # initial fetch to set up
-                stamp.info(f"🔄 close: {self.df['close'].iloc[-1]}")
+                self.df = self._mt5_fetch_latest(self.CANDLE_BUFFER)  # fetch latest data
+                self.update_data()   # update indicators etc
+                stamp.info(f"🔄 datetime: {self.df.index[-1].strftime('%H:%M:%S')} close: {self.df['close'].iloc[-1]}")
+
+                self.data = {col: self.df[col].to_numpy().copy() for col in self.df.columns}
+                self.data['datetime'] = self.df.index.to_numpy().copy() # Copy allows overriding of values
 
                 
-            
+                if self.buy_condition(-1):
+                    self.buy_action(-1)
+                    pass
+
+                if self.sell_condition(-1):
+                    self.sell_action(-1)
+                    pass
+
+                self._check_market_sltp(-1)
+
+
                 # ----- END LOOP LOGIC -----
                 
                 sleep_time = max(0, next_time - time.time())
@@ -278,7 +378,6 @@ class mt5_live(Strategy):
             #mt5.shutdown()
             stamp.success("🛑 Stopping MT5 live data stream...")
     
-    
     def check_password(self):
 
         stamp.input("🔐 Please enter your password to start bot: ")
@@ -290,9 +389,12 @@ class mt5_live(Strategy):
 
 if __name__ == "__main__":
 
-    bot1 = mt5_live("US100.cash", timeframe=mt5.TIMEFRAME_M5, candle_buffer=500, poll_interval=0.5)
+
+    bot1 = mt5_live("US100.cash", timeframe=mt5.TIMEFRAME_M1, candle_buffer=500, poll_interval=0.5)
 
     bot1.mt5_stream()
+
+    print(bot1.setting_slippage_sl)
 
     print(bot1.POLL_INTERVAL)
     print(bot1.SHARPE_RATIO_ANNUAL)

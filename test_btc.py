@@ -1,6 +1,6 @@
 import solomander as s
 from solomander.logger import log, stamp, pront
-from solomander.strategy import Strategy
+from solomander.baseStrategy import Strategy
 from matplotlib import pyplot as plt
 from scipy.stats import skewnorm, norm
 

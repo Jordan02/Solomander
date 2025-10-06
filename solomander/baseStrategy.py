@@ -24,20 +24,13 @@ except ImportError:
     
 
 class Strategy:
-    def __init__(self, df: pd.DataFrame, symbol_info: dict):
+    def __init__(self, df: pd.DataFrame, symbol_info: dict, **kwargs):
         
         # settings 
         self.setting_slippage_entry   = "worst_case"   # off, worst_case, random
         self.setting_slippage_sl      = "off"          # off, worst_case, random
         self.setting_slippage_tp      = "off"          # off, worst_case, random 
         self.setting_rounding_method  = "worst_case"        # nearest, worst_case
-
-        self._setting_rm_buy      = "ceil" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_buy_sl   = "floor" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_buy_tp   = "floor" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_sell     = "floor" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_sell_sl  = "ceil" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_sell_tp  = "ceil" if self.setting_rounding_method == "worst_case" else "round"
 
         # panda dataframes
         self.df = df                     # main dataframe (candles/indiciators)
@@ -58,8 +51,7 @@ class Strategy:
 
         # Account info
         self.START_MARGIN = 10000.0      # starting margin
-        self.ACTIVE_MARGIN = self.START_MARGIN  # starting margin
-    
+        
         # Market info
         self.symbol_data        = symbol_info
         self.MARKET_SYMBOL      = symbol_info.get('symbol', 'Unknown Symbol')
@@ -70,8 +62,6 @@ class Strategy:
         self.TICK_PRICE         = symbol_info.get('tick_price', 0.25)          # minimum price increment
         self.POINT_SLIPPAGE     = symbol_info.get('point_slippage', 1.0)
         self.TICK_SPREAD        = symbol_info.get('tick_spread', 0)            # typical spread in ticks
-        self.POINT_LEVERAGE     = self.TICK_PRICE/self.TICK_SIZE          # leverage from symbol data
-
         self.LOT_CURRENCY      = symbol_info.get('lot_currency', 'USD')        # lot currency
         self.LOT_MIN_SIZE      = symbol_info.get('lot_min_size', 1)            # min contract size
         self.LOT_INCREMENT     = symbol_info.get('lot_increment', 1)           # minimum order size increment
@@ -112,6 +102,24 @@ class Strategy:
         self.PNL = 0.0 #check
         self.PNL_MDD_RATIO = 0.0 #check
 
+        # ----- All KWARGS STORED AS PARAMS -----
+        self.INPUT_PARAMS = kwargs
+        self.init_kwargs = kwargs.copy() # store original kwargs for reference
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+        # ----- PARAMS for recalculation -----
+        self.update_data()                                   # user defined function to update indicators etc
+        self.ACTIVE_MARGIN      = self.START_MARGIN                                          # starting margin
+        self.POINT_LEVERAGE     = self.TICK_PRICE/self.TICK_SIZE                   # leverage from symbol data
+        self.TICK_SLIPPAGE      = self.POINT_SLIPPAGE/ self.TICK_SIZE                     # slippage in price terms
+
+        self._setting_rm_buy      = "ceil" if self.setting_rounding_method == "worst_case" else "round"
+        self._setting_rm_buy_sl   = "floor" if self.setting_rounding_method == "worst_case" else "round"
+        self._setting_rm_buy_tp   = "floor" if self.setting_rounding_method == "worst_case" else "round"
+        self._setting_rm_sell     = "floor" if self.setting_rounding_method == "worst_case" else "round"
+        self._setting_rm_sell_sl  = "ceil" if self.setting_rounding_method == "worst_case" else "round"
+        self._setting_rm_sell_tp  = "ceil" if self.setting_rounding_method == "worst_case" else "round"
 
 
     #---- INHERIT AND OVERRIDE THESE METHODS ----
@@ -142,6 +150,26 @@ class Strategy:
 
     #---- FUNCTIONS -----
     
+    def plots(self, rows=2, **kwargs):
+    
+        boxes=kwargs.get('boxes', False)
+        trade_id=kwargs.get('trade_id', False)
+
+        if rows < 2:
+            stamp.critical("Strategy.plots(): rows must be >=2")
+            return
+
+        self.axs = fplt.create_plot(f"{self.MARKET_NAME}/{self.TIME_INTERVAL_STR} {self.df.index[0]} - {self.df.index[-1]}", rows=rows)
+
+        # standard candles
+        fplt.volume_ocv(self.df[['open', 'close', 'volume']], ax=self.axs[0].overlay())
+        fplt.candlestick_ochl(self.df[['open', 'close', 'high', 'low']], ax=self.axs[0])
+        plot_trades(tf=self.tf, cc=self.cc, timestep=self.TIME_INTERVAL, ax=self.axs[0], boxes=boxes, trade_id=trade_id)
+        
+        # PnL chart
+        fplt.add_line((self.df.index[0], self.START_MARGIN), (self.df.index[-1], self.START_MARGIN), ax=self.axs[-1], color="#130000", style="--")
+        fplt.plot(self.df_cum_margin, ax=self.axs[-1], color="#ff6a00", legend="cumulative Pnl")
+
     def sell_bracket(self, i, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
         
         # ---- CHECKS ----

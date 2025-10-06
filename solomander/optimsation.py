@@ -7,10 +7,10 @@ import numpy as np
 
 try:
     from .logger import log, stamp, pront
-    from .strategy import Strategy
+    from .baseStrategy import Strategy
 except ImportError:
     from logger import log, stamp, pront
-    from strategy import Strategy
+    from solomander.baseStrategy import Strategy
 
 
 class Optimise:
