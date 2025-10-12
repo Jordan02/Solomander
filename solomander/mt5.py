@@ -1,3 +1,4 @@
+import asyncio
 import yfinance as yf
 import pandas as pd
 import os
@@ -12,16 +13,19 @@ import time
 import finplot as fplt
 import talib.abstract as ta
 from typing import final
+import discord
+from discord.ext import commands
+
 
 try: 
     from .logger import log, stamp, pront
-    from .utils import timedelta_to_str
+    from .utils import timedelta_to_str, print_boxed_title
     from .data import load_symbol, load_json, get_symbol_list, _load_data, _write_data
     from .baseStrategy import Strategy
 except ImportError: 
     #for running as main script
     from logger import log, stamp, pront
-    from utils import timedelta_to_str
+    from utils import timedelta_to_str, print_boxed_title
     from data import load_symbol, load_json, get_symbol_list, _load_data, _write_data
     from baseStrategy import Strategy
 
@@ -174,10 +178,33 @@ def _mt5_format_data(mt5_rates) -> pd.DataFrame:
 
 
 
-class mt5_live(Strategy):
+class MT5_live(Strategy):
 
-    def __init__(self, symbol_str, timeframe = mt5.TIMEFRAME_M5, candle_buffer = 500, poll_interval = 5, **kwargs):
+    def __init__(self, symbol_str, timeframe = mt5.TIMEFRAME_M5, candle_buffer = 500, poll_interval = 5, test_mode = False, **kwargs):
 
+        # ----- NEW PARAMETERS -----
+        self.TIME_INTERVAL_MT5 = timeframe
+        self.CANDLE_BUFFER = candle_buffer
+        self.POLL_INTERVAL = poll_interval
+        self.setting_password = str(os.getenv('MT5_BOT_PASSWORD', '123'))  # default password if not set in .env
+        self.DEVIATION = 10
+        self.TEST_MODE = test_mode  #set to true to skip actual mt5 orders for testing
+        
+        self.setting_listen_time = 0.25 #seconds
+        self._running = threading.Event()
+        self._running.set() #switch on
+        self._discord_attached = threading.Event()
+        self._discord_attached.clear() #switch off
+        self._discord_ready = threading.Event()
+        self._discord_ready.clear() #switch off
+        self._password_verified = threading.Event()
+        self._password_verified.clear() #switch off
+        self.bot=None  
+
+        # Console listen thread for stop command
+        self.___console_listener = threading.Thread(target=self._console_ear, daemon=True)
+        self.___console_listener.start()
+     
         # ----- ENSURE LOGIN and symbol info -----
         mt5_login()
 
@@ -201,18 +228,6 @@ class mt5_live(Strategy):
                         )
         
         
-        # ----- NEW PARAMETERS -----
-        self.TIME_INTERVAL_MT5 = timeframe
-        self.CANDLE_BUFFER = candle_buffer
-        self.POLL_INTERVAL = poll_interval
-        self.setting_password = str(os.getenv('MT5_BOT_PASSWORD', '123'))  # default password if not set in .env
-        self.DEVIATION = 10
-        
-        # ---- THREADING -----
-        self._running = threading.Event()         
-        self.setting_listen_time = 0.25      # seconds between checking for stop command
-
-
     # ------ OVERIDDEN METHODS ------
 
     @final
@@ -232,6 +247,10 @@ class mt5_live(Strategy):
 
         # ------- Call parent logic (handles counters, tracking, etc.) -------
         super().sell_bracket(i, qty, _sl_price, _tp_price, sl_pips=None, tp_pips=None, comments=comments)
+
+        if self.TEST_MODE is True:
+            log.warning(f"✅ TEST MODE: BUY order simulated at {_entry_price} (sl={_sl_price}, tp={_tp_price})")
+            return
 
         # ------- Send the MT5 market order -------
         request = {
@@ -278,6 +297,10 @@ class mt5_live(Strategy):
         # ------- Call parent logic (handles counters, tracking, etc.) -------
         super().buy_bracket(i, qty, _sl_price, _tp_price, sl_pips=None, tp_pips=None, comments=comments)
 
+        if self.TEST_MODE is True:
+            log.warning(f"✅ TEST MODE: BUY order simulated at {_entry_price} (sl={_sl_price}, tp={_tp_price})")
+            return
+
         # ------- Send the MT5 market order -------
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -293,7 +316,7 @@ class mt5_live(Strategy):
             "type_filling": mt5.ORDER_FILLING_FOK,
             "type_time": mt5.ORDER_TIME_GTC,
         }
-
+        
         result = mt5.order_send(request)
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             log.error(f"❌ MT5 BUY order failed: {result.retcode}")
@@ -318,27 +341,45 @@ class mt5_live(Strategy):
 
         return df
 
-    def _input_running_listener(self):
+    def _console_ear(self):
+
+        while self._password_verified.is_set() is False:
+            time.sleep(self.setting_listen_time)  #prevent busy wait, be kind to cpu
+            cmd = input().strip().lower()
+            if cmd == self.setting_password:
+                stamp.success("[CMD] ✅ Password correct")
+                self._password_verified.set()
+            else:
+                stamp.error("[CMD] ❌ Password incorrect, try again.")
+
 
         while self._running.is_set():
             time.sleep(self.setting_listen_time)  #prevent busy wait, be kind to cpu
             cmd = input().strip().lower()
             if cmd == "stop":
-                stamp.success("✅ Stop command received.")
+                stamp.success("[CMD] ✅ Stop command received.")
+                stamp.success("[CMD] 💤 Discord bot closing")
                 self._running.clear()
 
     def mt5_stream(self):
 
-        if not self.check_password():
-            stamp.error("❌ Incorrect password. Access denied.")
-            return 
-        
-        # ----- set up stop listener on seperate thread -----
-        self._running.set() #switch on
-        listener = threading.Thread(target=self._input_running_listener, daemon=True)
-        listener.start()
-        stamp.success("✅ Password correct. Generational wealth loading...") 
+        #wait for discord if it exisits
+        if self._discord_attached.is_set() is True:
+            while self._discord_ready.is_set() is False:
+                time.sleep(self.setting_listen_time)  #wait for discord to be ready
+        else:
+            stamp.warning("🚧 No Discord bot attached, proceeding without it.")
 
+        stamp.input("Enter in password:")
+        while self._password_verified.is_set() is False:
+            time.sleep(self.setting_listen_time)  #wait for password to be verified
+
+        label_width = 18  # adjust so colons line up
+        print_boxed_title("INPUT PARAMS")
+        for key, value in self.INPUT_PARAMS.items():
+            pront.info(f"{key + ':':<{label_width}} {value}")
+
+    
         self.df = self._mt5_fetch_latest(self.CANDLE_BUFFER)  # initial fetch to set up    
         
         try:
@@ -347,9 +388,11 @@ class mt5_live(Strategy):
                 next_time = time.time()+ self.POLL_INTERVAL
                 
                 # ----- LOOP LOGIC -----
+                stamp.info(f"🔄 datetime: {self.df.index[-1].strftime('%H:%M:%S')} close: {self.df['close'].iloc[-1]}")
+                
+                self.loop_update(-1)
                 self.df = self._mt5_fetch_latest(self.CANDLE_BUFFER)  # fetch latest data
                 self.update_data()   # update indicators etc
-                stamp.info(f"🔄 datetime: {self.df.index[-1].strftime('%H:%M:%S')} close: {self.df['close'].iloc[-1]}")
 
                 self.data = {col: self.df[col].to_numpy().copy() for col in self.df.columns}
                 self.data['datetime'] = self.df.index.to_numpy().copy() # Copy allows overriding of values
@@ -378,23 +421,14 @@ class mt5_live(Strategy):
             #mt5.shutdown()
             stamp.success("🛑 Stopping MT5 live data stream...")
     
-    def check_password(self):
 
-        stamp.input("🔐 Please enter your password to start bot: ")
-        password = getpass.getpass("")
-        if password == self.setting_password: 
-            return True
-        else:
-            return False
+
+        
 
 if __name__ == "__main__":
 
 
-    bot1 = mt5_live("US100.cash", timeframe=mt5.TIMEFRAME_M1, candle_buffer=500, poll_interval=0.5)
+
+    bot1 = MT5_live("US100.cash", timeframe=mt5.TIMEFRAME_M1, candle_buffer=500, test_mode=True, poll_interval=1)
 
     bot1.mt5_stream()
-
-    print(bot1.setting_slippage_sl)
-
-    print(bot1.POLL_INTERVAL)
-    print(bot1.SHARPE_RATIO_ANNUAL)

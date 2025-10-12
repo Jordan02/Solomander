@@ -59,6 +59,8 @@ class Backtester(Strategy):
         # Fixed Strategy loop:
         for i in range(len(self.df)):
 
+            self.loop_update(i)  # user defined function to update any values each loop
+
             if self.buy_condition(i):
                 
                 self.buy_action(i)
@@ -111,11 +113,7 @@ class Backtester(Strategy):
 
     @final
     def show(self, **kwargs):
-        # CHECK IF ANY ORDERS WERE EXECUTED
-        if self.TOTAL_ORDERS == 0:
-            log.warning("🚩 No orders were executed. Check your strategy logic.")
-            return
-        
+
         self.plots(**kwargs)
         fplt.show()
         return

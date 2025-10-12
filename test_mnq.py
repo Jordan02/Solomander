@@ -25,7 +25,7 @@ SYMBOL = "US100.cash"
 
 s.mt5_login()
 ticker = s.mt5_symbol_info(SYMBOL)
-df = s.mt5_hdata(SYMBOL, mt5.TIMEFRAME_M5, candle_lookback=8000)
+df = s.mt5_hdata(SYMBOL, mt5.TIMEFRAME_M5, candle_lookback=2000)
 
 #df = s.load_yfinance(SYMBOL, start="2025-08-16", end="2025-09-16", interval="5m")
 #ticker = s.load_symbol(SYMBOL)
@@ -136,20 +136,21 @@ guess_2={"atr_multiplier": 2.67, "sma_fast": 23, "sma_slow": 127, "rr": 2.76, "o
 guess_3={"atr_multiplier": 1.62, "sma_fast": 17, "sma_slow": 55, "rr": 1.5, "open_trades": 3}
 guess_4={"atr_multiplier": 2.35, "sma_fast": 25, "sma_slow": 58, "rr": 1.78, "open_trades": 3}
 guess_5={"atr_multiplier": 2.07, "sma_fast": 17, "sma_slow": 56, "rr": 2.17, "open_trades": 1}
+guess_11={"atr_multiplier": 1.44, "sma_fast": 18, "sma_slow": 108, "rr": 1.68, "open_trades": 8}
 
 
-if 1:
+if 0:
     study = s.Optimise( objective,
-                        n_trials=20,
+                        n_trials=10,
                         n_jobs=1,
-                        guess=[guess_2,guess_3, guess_4],
+                        guess=[guess_2, guess_3, guess_4, guess_5, guess_11],
                         direction = 'maximize',
                         target="SR")
     best_params = study.execute()
     study.show(pnl_curves=pnl_curve, info=display_values)
 
 
-test_params = best_params
+test_params={"atr_multiplier": 2.07, "sma_fast": 17, "sma_slow": 56, "rr": 2.17, "open_trades": 1}
 
 # ==== EXECUTION =====
 
@@ -161,7 +162,7 @@ st = strat1(df,
             SMA_FAST= test_params['sma_fast'],
             SMA_SLOW= test_params['sma_slow'],
             ALLOWED_OPEN_TRADES=test_params['open_trades'],
-            SIZE=1)
+            SIZE=3)
 
 
 

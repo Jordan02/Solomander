@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import random
+import matplotlib.pyplot as plt
 
 try:
     from .logger import log, stamp, pront
@@ -90,3 +91,10 @@ def print_boxed_title(title):
     pront.info(f"╔{line}╗")
     pront.info(f"║  {title}  ║")
     pront.info(f"╚{line}╝")
+
+
+
+
+
+if __name__ == "__main__":
+    pass

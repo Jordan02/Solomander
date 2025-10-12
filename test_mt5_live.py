@@ -2,7 +2,7 @@ import solomander as s
 from solomander.logger import log, stamp, pront
 from solomander.baseStrategy import Strategy
 from solomander.backtester import Backtester
-from solomander.mt5 import mt5_live
+from solomander.mt5 import MT5_live
 from matplotlib import pyplot as plt
 from scipy.stats import skewnorm, norm
 import MetaTrader5 as mt5
@@ -24,7 +24,7 @@ pd.set_option("display.max_columns", None)
 
 SYMBOL = "US100.cash"
 
-class strat1(mt5_live):
+class strat1(MT5_live):
 
     # add Input and settings here, so they can be intellisensed
     FEE: float
@@ -88,22 +88,28 @@ class strat1(mt5_live):
 
 # ==== EXECUTION =====
 
-params={"atr_multiplier": 2.67, "sma_fast": 23, "sma_slow": 127, "rr": 2.76, "open_trades": 1}
+params={"atr_multiplier": 2.07, "sma_fast": 17, "sma_slow": 56, "rr": 2.17, "open_trades": 1}
 
 st = strat1("US100.cash",
-            timeframe=mt5.TIMEFRAME_M1,
+            timeframe=mt5.TIMEFRAME_M5,
             candle_buffer=500,
             poll_interval=0.5,
+            test_mode=True,
             ATR_MULTIPLIER= params['atr_multiplier'],
             RR=params['rr'],
             SMA_FAST= params['sma_fast'],
             SMA_SLOW= params['sma_slow'],
             ALLOWED_OPEN_TRADES=params['open_trades'],
-            SIZE=1
+            SIZE=3
             )
 
 
+
+bot = s.DiscordBot(st)
 st.mt5_stream()
+
+
+
 
 
 

@@ -16,7 +16,7 @@ except ImportError:
 
 
 
-def vwap(df:pd.DataFrame, ax=None, start = "00:00", end = "23:59", mode="session", tz="UTC"): 
+def vwap(df:pd.DataFrame, start = "00:00", end = "23:59", mode="session", tz="UTC"): 
 
     # local df copy
     df_timezone = df.index.tz # save orginal tz format

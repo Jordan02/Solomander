@@ -147,6 +147,9 @@ class Strategy:
     def update_data(self):
 
         return
+    
+    def loop_update(self, i):
+        return
 
     #---- FUNCTIONS -----
     
@@ -164,11 +167,15 @@ class Strategy:
         # standard candles
         fplt.volume_ocv(self.df[['open', 'close', 'volume']], ax=self.axs[0].overlay())
         fplt.candlestick_ochl(self.df[['open', 'close', 'high', 'low']], ax=self.axs[0])
-        plot_trades(tf=self.tf, cc=self.cc, timestep=self.TIME_INTERVAL, ax=self.axs[0], boxes=boxes, trade_id=trade_id)
         
         # PnL chart
-        fplt.add_line((self.df.index[0], self.START_MARGIN), (self.df.index[-1], self.START_MARGIN), ax=self.axs[-1], color="#130000", style="--")
-        fplt.plot(self.df_cum_margin, ax=self.axs[-1], color="#ff6a00", legend="cumulative Pnl")
+        if self.TOTAL_TRADES <= 0:
+            log.warning("🚩 No trades were executed. Cannot plot PnL chart.")
+            return
+        else:
+            fplt.add_line((self.df.index[0], self.START_MARGIN), (self.df.index[-1], self.START_MARGIN), ax=self.axs[-1], color="#130000", style="--")
+            fplt.plot(self.df_cum_margin, ax=self.axs[-1], color="#ff6a00", legend="cumulative Pnl")
+            plot_trades(tf=self.tf, cc=self.cc, timestep=self.TIME_INTERVAL, ax=self.axs[0], boxes=boxes, trade_id=trade_id)
 
     def sell_bracket(self, i, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
         
