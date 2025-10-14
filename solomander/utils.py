@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import random
 import matplotlib.pyplot as plt
+import colorsys
 
 try:
     from .logger import log, stamp, pront
@@ -10,44 +11,55 @@ except ImportError:
   
 
 
-def sharpe(trades:pd.DataFrame, type:str="annual"):
-    """Sharpe Ratio
+def sharpe(returns, dates, mode="annual"):
 
-    trades must contain 'exit_time' (formatted as a datetime) and 'return' columns
-    #note this is the shortcut verison. Fine, but as chat about it if you want.
+    """Compute Sharpe Ratio from lists of returns and datetimes."""
 
-    """
-    if trades.empty or trades['return'].std(ddof=1) == 0:
-        log.debug("SR: No trades or zero stddev on returns")
+    returns = np.array(returns, dtype=float)
+    dates = pd.to_datetime(dates)
+
+    # group by day manually (fast and memory-light)
+    unique_days, inv_idx = np.unique([d.date() for d in dates], return_inverse=True)
+    daily_sums = np.zeros(len(unique_days))
+    np.add.at(daily_sums, inv_idx, returns)  # sums returns by day in-place
+
+    if len(daily_sums) < 2 or np.std(daily_sums, ddof=1) == 0:
         return 0
 
-    daily_returns = trades.groupby(trades['exit_time'].dt.date)['return'].sum()
+    sr_daily = np.mean(daily_sums) / np.std(daily_sums, ddof=1)
 
-    SR_Daily = (daily_returns.mean() / daily_returns.std(ddof=1))
+    return sr_daily if mode == "daily" else sr_daily * np.sqrt(256)
 
-    if type == "daily":
-        return SR_Daily
+def sortino(returns, dates, mode="annual"):
+    """
+    Compute Sortino ratio from lists of returns and datetimes.
+    """
+
+    # ---- Safety checks ----
     
-    return SR_Daily * np.sqrt(252)  # assuming 252 trading days in a year
+    returns = np.array(returns, dtype=float)
+    dates = pd.to_datetime(dates)
 
-def sortino(trades: pd.DataFrame, type: str = "annual"):
-    """Sortino Ratio
+    # ---- Group by date (vectorized, like before) ----
+    unique_days, inv_idx = np.unique([d.date() for d in dates], return_inverse=True)
+    daily_sums = np.zeros(len(unique_days))
+    np.add.at(daily_sums, inv_idx, returns)  # sum up returns by day
 
-    trades must contain 'exit_time' and 'return' columns
-    """
-
-    if trades.empty or trades['return'].std(ddof=1) == 0:
+    if len(daily_sums) < 2:
         return 0
 
-    daily_returns = trades.groupby(trades['exit_time'].dt.date)['return'].sum()
-    downside = daily_returns[daily_returns < 0]
+    # ---- Calculate downside deviation ----
+    downside = daily_sums[daily_sums < 0]
 
-    sortino_daily = daily_returns.mean() / downside.std(ddof=1)
+    if downside.size < 2:
+        return 0
 
-    if type == "daily":
-        return sortino_daily
+    # ---- Compute daily Sortino ratio ----
+    sortino_daily = np.mean(daily_sums) / np.std(downside, ddof=1)
 
-    return sortino_daily * np.sqrt(252)  # annualized
+    # ---- Return daily or annualized ----
+    return sortino_daily if mode == "daily" else sortino_daily * np.sqrt(256)
+
 
 def max_drawdown(pnl):
     # ensure numpy array, but only convert if necessary
@@ -75,6 +87,67 @@ def random_color(alpha=1.0):
     a = int(alpha * 255)
     return "#{:06x}{:02x}".format(rgb, a)
 
+def adjust_opacity(color, factor=0.1):
+    
+    """
+    Reduces (or increases) the opacity of an 8-digit hex color.
+    
+    Args:
+        color (str): 8-digit hex color string (e.g. '#0c57e497' or '#FF00FF80').
+        factor (float): multiplier for opacity (0.0–1.0).
+                        e.g. 0.5 makes it 50% more transparent.
+                        
+    Returns:
+        str: New 8-digit hex color string with adjusted alpha.
+    """
+
+    color = color.lstrip("#")
+    if len(color) not in (6, 8):
+        raise ValueError("Color must be a 6- or 8-digit hex string.")
+
+    # Extract RGB and alpha
+    rgb = color[:6]
+    alpha = color[6:] if len(color) == 8 else "FF"  # default opaque if not given
+
+    # Convert alpha to int, apply factor
+    new_alpha = int(int(alpha, 16) * factor)
+    new_alpha = max(0, min(255, new_alpha))  # clamp between 0–255
+
+    return f"#{rgb}{new_alpha:02x}"
+
+def shift_hue(color: str, shift: float) -> str:
+    """
+    Shift a hex color's hue by a given amount (0–360 degrees), wrapping around.
+    Args:
+        color (str): Hex color, e.g. "#ff00ff" or "#ff00ffaa".
+        shift (float or int): Hue shift amount in degrees.
+    Returns:
+        str: New hex color string (no alpha).
+    """
+    color = color.lstrip("#")
+
+    # Parse RGB
+    if len(color) == 8:
+        r, g, b, a = [int(color[i:i+2], 16)/255 for i in (0, 2, 4, 6)]
+    else:
+        r, g, b = [int(color[i:i+2], 16)/255 for i in (0, 2, 4)]
+        a = None
+
+    # Convert to HLS
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+
+    # Apply hue shift (wrap around 1.0)
+    h = (h + shift / 360.0) % 1.0
+
+    # Convert back to RGB
+    r, g, b = colorsys.hls_to_rgb(h, l, s)
+    if a is not None:
+        return "#{:02x}{:02x}{:02x}{:02x}".format(
+            int(r * 255), int(g * 255), int(b * 255), int(a * 255)
+        )
+    else:
+        return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
+
 def timedelta_to_str(td: pd.Timedelta) -> str:
 
     minutes = int(td.total_seconds() // 60)
@@ -97,4 +170,10 @@ def print_boxed_title(title):
 
 
 if __name__ == "__main__":
+
+
+    returns = np.random.uniform(-0.04, 0.045, 24*256)
+    dates = pd.date_range(start='2023-01-01', periods=len(returns), freq='H')
+
+    print("Sharpe Ratio (Annual):", sharpe(returns, dates, mode="annual"))
     pass

@@ -8,6 +8,9 @@ import MetaTrader5 as mt5
 from dotenv import load_dotenv
 import os
 
+import matplotlib
+
+
 import pandas as pd
 import finplot as fplt
 import talib
@@ -18,30 +21,58 @@ import optuna
 import optuna.visualization as vis
 import optuna.visualization.matplotlib as vism
 
-pd.set_option("display.max_columns", None)
 
 
+DISCORD_REPORT = False
+
+OPTIMISE = False
+OPTIMISE_TRIALS = 500
+COLOR_OPTIMISE = "#b3ff00"
+
+MONTE_CARLO = True
+MONTE_CARLO_RUNS = 300
+MONTE_CARLO_MODE = "bootstrap"  # permutation / bootstrap
+MONTE_CARLO_COLOR = "#04C8EB"
+
+NOISE_TEST = False
+NOISE_TEST_NUDGES = 5
+NOISE_TEST_PARAMS={'SMA_FAST':1, 'SMA_SLOW':1}
+NOISE_TEST_COLOR = "#fffb00"
+
+SHOW_CANDLE_CHART = True
 SYMBOL = "US100.cash"
+TIME_FRAME = mt5.TIMEFRAME_M5
+CANDLE_LOOKBACK = 4000
+
+
+
+
+if DISCORD_REPORT:
+    matplotlib.use("Agg")  
+    bot = s.DiscordBot()
+    bot.am_ready.wait()  #wait till bot is ready
+else:
+    matplotlib.use("TkAgg")
+
+pd.set_option("display.max_columns", None)
 
 s.mt5_login()
 ticker = s.mt5_symbol_info(SYMBOL)
-df = s.mt5_hdata(SYMBOL, mt5.TIMEFRAME_M5, candle_lookback=2000)
-
-#df = s.load_yfinance(SYMBOL, start="2025-08-16", end="2025-09-16", interval="5m")
-#ticker = s.load_symbol(SYMBOL)
+df = s.mt5_hdata(SYMBOL, TIME_FRAME, candle_lookback=CANDLE_LOOKBACK)
 
 
-class strat1(Backtester):
+class strat1(Strategy):
 
-    # add Input and settings here, so they can be intellisensed
-    FEE: float
-    LEVERAGE: float
-    ATR_MULTIPLIER: float
-    RR: float
-    SMA_FAST: int
-    SMA_SLOW: int
-    SIZE: float
-    ALLOWED_OPEN_TRADES: int
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        self.SMA_FAST = kwargs.get("SMA_FAST", 10)
+        self.SMA_SLOW = kwargs.get("SMA_SLOW", 50)
+        self.ATR_MULTIPLIER = kwargs.get("ATR_MULTIPLIER", 1.5)
+        self.SIZE = kwargs.get("SIZE", 1.0)
+        self.ALLOWED_OPEN_TRADES = kwargs.get("ALLOWED_OPEN_TRADES", 1)
+        self.RR = kwargs.get("RR", 2.0)
+        pass
 
     # ===== SET STRATEGY PARAMETERS =====
     def update_data(self):
@@ -58,15 +89,14 @@ class strat1(Backtester):
 
     # ===== BUY LOGIC =====
     def buy_condition(self, i):
-        time_cond = self.data['NY'][i] > 0 # in ny session 
         return self.data['crossover'][i-1] > 0 and self.OPEN_TRADES < self.ALLOWED_OPEN_TRADES
 
     def buy_action(self, i):
         
         sl = self.data['atr'][i]*self.ATR_MULTIPLIER
         tp = sl * self.RR
-        self.buy_bracket(i, self.SIZE, sl_pips=sl, tp_pips=tp, comments='B')
-        return 
+        
+        return self.buy_bracket(i, self.SIZE, sl_pips=sl, tp_pips=tp, comments='B')
     
     # ===== SELL LOGIC =====
     def sell_condition(self, i):
@@ -78,8 +108,8 @@ class strat1(Backtester):
     
         sl = self.data['atr'][i]*self.ATR_MULTIPLIER
         tp = sl * self.RR
-        self.sell_bracket(i, self.SIZE, sl_pips=sl, tp_pips=tp, comments='S')
-        return 
+        
+        return self.sell_bracket(i, self.SIZE, sl_pips=sl, tp_pips=tp, comments='S')
 
     # ===== Visualization =====
 
@@ -108,8 +138,7 @@ def objective(trial):
     open_trades = trial.suggest_int("open_trades", 1, 10)
 
     # Create and run the strategy
-    st = strat1(  df,
-                  ticker,
+    st = strat1( 
                   ATR_MULTIPLIER=atr_multiplier, 
                   RR=rr, 
                   SMA_FAST=sma_fast, 
@@ -117,19 +146,22 @@ def objective(trial):
                   ALLOWED_OPEN_TRADES=open_trades,
                   SIZE=1 )
     
-    st.execute()
+    
+    study = Backtester(st,df,ticker)
+    result = study.execute()
+    
+    pnl_curve.append(result.l_CUMSUM_PNL)
 
-    pnl_curve.append(st.tf['pnl'].cumsum().to_numpy())
     display_values.append({  "atr_multiplier": atr_multiplier, 
                              "sma_fast": sma_fast,
                              "sma_slow": sma_slow, 
-                             "mdd": st.MAX_DRAWDOWN, 
-                             "sr": st.SHARPE_RATIO_ANNUAL,
-                             "pnl": st.PNL,
+                             "mdd": result.TOTAL_MAX_DRAWDOWN, 
+                             "sr": result.TOTAL_SHARPE_RATIO_ANNUAL,
+                             "pnl": result.TOTAL_PNL,
                              "open_trades": open_trades,
                              "rr": rr})
 
-    return st.SHARPE_RATIO_ANNUAL
+    return result.TOTAL_SHARPE_RATIO_ANNUAL
 
 #guess_1={"atr_multiplier": 1.83, "sma_fast": 6, "sma_slow": 46}
 guess_2={"atr_multiplier": 2.67, "sma_fast": 23, "sma_slow": 127, "rr": 2.76, "open_trades": 1}
@@ -139,42 +171,59 @@ guess_5={"atr_multiplier": 2.07, "sma_fast": 17, "sma_slow": 56, "rr": 2.17, "op
 guess_11={"atr_multiplier": 1.44, "sma_fast": 18, "sma_slow": 108, "rr": 1.68, "open_trades": 8}
 
 
-if 0:
+if OPTIMISE:
     study = s.Optimise( objective,
-                        n_trials=10,
+                        n_trials=OPTIMISE_TRIALS,
                         n_jobs=1,
-                        guess=[guess_2, guess_3, guess_4, guess_5, guess_11],
+                        guess=[],
                         direction = 'maximize',
                         target="SR")
     best_params = study.execute()
-    study.show(pnl_curves=pnl_curve, info=display_values)
 
+    buf = study.show(pnl_curves=pnl_curve, info=display_values, discord=DISCORD_REPORT, color=COLOR_OPTIMISE)
 
-test_params={"atr_multiplier": 2.07, "sma_fast": 17, "sma_slow": 56, "rr": 2.17, "open_trades": 1}
+    if DISCORD_REPORT:
+        bot.post_fig(buf, "📈 Optimization Results", color=COLOR_OPTIMISE)
+
+else:
+
+    best_params={"atr_multiplier": 2, "sma_fast": 17, "sma_slow": 54, "rr": 1.3, "open_trades": 4}
 
 # ==== EXECUTION =====
 
 
-st = strat1(df,
-            ticker,
-            ATR_MULTIPLIER= test_params['atr_multiplier'],
-            RR=test_params['rr'],
-            SMA_FAST= test_params['sma_fast'],
-            SMA_SLOW= test_params['sma_slow'],
-            ALLOWED_OPEN_TRADES=test_params['open_trades'],
-            SIZE=3)
+st = strat1(
+            ATR_MULTIPLIER= best_params['atr_multiplier'],
+            RR=best_params['rr'],
+            SMA_FAST= best_params['sma_fast'],
+            SMA_SLOW=best_params['sma_slow'],
+            ALLOWED_OPEN_TRADES= best_params['open_trades'],
+            SIZE=1)
+
+study = Backtester(st,df,ticker)
+result = study.execute()
+
+if SHOW_CANDLE_CHART:
+    study.show()
 
 
+study.print_metrics()
+print(result.tf.head(20))
 
-st.execute()
-st.show()
-st.print_metrics()
+if MONTE_CARLO:
+    buf = s.monte_carlo(result, runs=MONTE_CARLO_RUNS, mode=MONTE_CARLO_MODE, discord=DISCORD_REPORT, color=MONTE_CARLO_COLOR, seed=156, params=st.INPUT_PARAMS)
 
-#test_params={'SMA_FAST':1,'SMA_SLOW':1}
-#test_params={'ATR_MULTIPLIER':0.01, 'RR': 0.02}
-s.monte_carlo(st.tf, runs=300, mode='bootstrap', seed=156, params=st.INPUT_PARAMS)
-#s.noise_test(st, test_params=test_params, nudges=3)
-print(st.tf)
+    if DISCORD_REPORT:
+        bot.post_fig(buf, "📊 Monte Carlo Results", color=MONTE_CARLO_COLOR)
+
+
+if NOISE_TEST:
+    buf = s.noise_test(result, test_params=NOISE_TEST_PARAMS, nudges=NOISE_TEST_NUDGES, color=NOISE_TEST_COLOR, discord=DISCORD_REPORT)
+
+    if DISCORD_REPORT:
+        
+        bot.post_fig(buf, "📢 Noise Test Results", color=NOISE_TEST_COLOR)
+    
 
 
 plt.show()

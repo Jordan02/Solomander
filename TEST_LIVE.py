@@ -2,12 +2,14 @@ import solomander as s
 from solomander.logger import log, stamp, pront
 from solomander.baseStrategy import Strategy
 from solomander.backtester import Backtester
-from solomander.mt5 import MT5_live
 from matplotlib import pyplot as plt
 from scipy.stats import skewnorm, norm
 import MetaTrader5 as mt5
 from dotenv import load_dotenv
 import os
+
+import matplotlib
+
 
 import pandas as pd
 import finplot as fplt
@@ -19,22 +21,37 @@ import optuna
 import optuna.visualization as vis
 import optuna.visualization.matplotlib as vism
 
+
+
+DISCORD_BOT = True
+SYMBOL = "US100.cash"
+TIME_FRAME = mt5.TIMEFRAME_M1
+CANDLE_BUFFER = 500
+POLL_TIME = 0.5  # seconds
+TEST_MODE = True
+
+
+
 pd.set_option("display.max_columns", None)
 
+s.mt5_login()
+ticker = s.mt5_symbol_info(SYMBOL)
+df = s.mt5_hdata(SYMBOL, TIME_FRAME, candle_lookback=2000)
 
-SYMBOL = "US100.cash"
 
-class strat1(MT5_live):
 
-    # add Input and settings here, so they can be intellisensed
-    FEE: float
-    LEVERAGE: float
-    ATR_MULTIPLIER: float
-    RR: float
-    SMA_FAST: int
-    SMA_SLOW: int
-    SIZE: float
-    ALLOWED_OPEN_TRADES: int
+class strat1(Strategy):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        self.SMA_FAST = kwargs.get("SMA_FAST", 10)
+        self.SMA_SLOW = kwargs.get("SMA_SLOW", 50)
+        self.ATR_MULTIPLIER = kwargs.get("ATR_MULTIPLIER", 1.5)
+        self.SIZE = kwargs.get("SIZE", 1.0)
+        self.ALLOWED_OPEN_TRADES = kwargs.get("ALLOWED_OPEN_TRADES", 1)
+        self.RR = kwargs.get("RR", 2.0)
+        pass
 
     # ===== SET STRATEGY PARAMETERS =====
     def update_data(self):
@@ -51,15 +68,14 @@ class strat1(MT5_live):
 
     # ===== BUY LOGIC =====
     def buy_condition(self, i):
-        time_cond = self.data['NY'][i] > 0 # in ny session 
         return self.data['crossover'][i-1] > 0 and self.OPEN_TRADES < self.ALLOWED_OPEN_TRADES
 
     def buy_action(self, i):
         
         sl = self.data['atr'][i]*self.ATR_MULTIPLIER
         tp = sl * self.RR
-        self.buy_bracket(i, self.SIZE, sl_pips=sl, tp_pips=tp, comments='B')
-        return 
+        
+        return self.buy_bracket(i, self.SIZE, sl_pips=sl, tp_pips=tp, comments='B')
     
     # ===== SELL LOGIC =====
     def sell_condition(self, i):
@@ -71,8 +87,8 @@ class strat1(MT5_live):
     
         sl = self.data['atr'][i]*self.ATR_MULTIPLIER
         tp = sl * self.RR
-        self.sell_bracket(i, self.SIZE, sl_pips=sl, tp_pips=tp, comments='S')
-        return 
+        
+        return self.sell_bracket(i, self.SIZE, sl_pips=sl, tp_pips=tp, comments='S')
 
     # ===== Visualization =====
 
@@ -86,30 +102,44 @@ class strat1(MT5_live):
         s.plot_timeband(self.df, 'NY', ax=self.axs[0], color="#a8a8a83d", title="NY")
 
 
-# ==== EXECUTION =====
+best_params={"atr_multiplier": 2, "sma_fast": 17, "sma_slow": 54, "rr": 1.3, "open_trades": 4}
 
-params={"atr_multiplier": 2.07, "sma_fast": 17, "sma_slow": 56, "rr": 2.17, "open_trades": 1}
-
-st = strat1("US100.cash",
-            timeframe=mt5.TIMEFRAME_M5,
-            candle_buffer=500,
-            poll_interval=0.5,
-            test_mode=True,
-            ATR_MULTIPLIER= params['atr_multiplier'],
-            RR=params['rr'],
-            SMA_FAST= params['sma_fast'],
-            SMA_SLOW= params['sma_slow'],
-            ALLOWED_OPEN_TRADES=params['open_trades'],
-            SIZE=3
-            )
+strategy = strat1(
+                    ATR_MULTIPLIER= best_params['atr_multiplier'],
+                    RR=best_params['rr'],
+                    SMA_FAST= best_params['sma_fast'],
+                    SMA_SLOW=best_params['sma_slow'],
+                    ALLOWED_OPEN_TRADES= best_params['open_trades'],
+                    SIZE=1)
 
 
-
-bot = s.DiscordBot(st)
-st.mt5_stream()
-
+backtest_strategy = Backtester(strategy,df,ticker)
+results = backtest_strategy.execute()
 
 
+mt5_bot = s.MT5_live(results, 
+                     SYMBOL, 
+                     TIME_FRAME, 
+                     CANDLE_BUFFER, 
+                     POLL_TIME, 
+                     test_mode=TEST_MODE
+                     )
+
+if DISCORD_BOT:
+    matplotlib.use("Agg")  
+    bot = s.DiscordBot(mt5_bot)
+    bot.am_ready.wait()  #wait till bot is ready
+else:
+    matplotlib.use("TkAgg")
+
+mt5_bot.mt5_stream()
+
+
+
+
+
+
+    
 
 
 

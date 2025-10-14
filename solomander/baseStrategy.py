@@ -1,3 +1,4 @@
+from enum import Enum
 import finplot as fplt
 import talib
 import talib.abstract as ta
@@ -6,6 +7,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import math
+from enum import Enum, auto
 
 from typing import final
 
@@ -23,136 +25,282 @@ except ImportError:
     from visuals import plot_trades
     
 
+
+class Setting(Enum):
+    CEIL = auto()
+    FLOOR = auto()
+    ROUND = auto()
+
+    SLIP_OFF = auto()
+    SLIP_WORST_CASE = auto()
+    SLIP_RANDOM = auto()
+
+    ROUND_NEAREST = auto()
+    ROUND_WORST_CASE = auto()
+    
+
 class Strategy:
-    def __init__(self, df: pd.DataFrame, symbol_info: dict, **kwargs):
+
+    def __init__(self, **kwargs):
         
-        # settings 
-        self.setting_slippage_entry   = "worst_case"   # off, worst_case, random
-        self.setting_slippage_sl      = "off"          # off, worst_case, random
-        self.setting_slippage_tp      = "off"          # off, worst_case, random 
-        self.setting_rounding_method  = "worst_case"        # nearest, worst_case
+        # ---- settings ----
+        self.setting_slippage_entry    = Setting.SLIP_OFF
+        self.setting_slippage_sl       = Setting.SLIP_OFF
+        self.setting_slippage_tp       = Setting.SLIP_OFF
+        self.setting_rounding_method   = Setting.ROUND_WORST_CASE
+        self.setting_track_all_metrics = False                      
 
-        # panda dataframes
-        self.df = df                     # main dataframe (candles/indiciators)
-        self.tf = pd.DataFrame()         # trade dataframe
-        self.oo = pd.DataFrame()         # open orders dataframe
-        self.cc = pd.DataFrame()         # closed orders dataframe
-        self.df_cum_margin = pd.DataFrame() # cumulative margin over time
-        self.df_cum_pnl = pd.DataFrame()    # cumulative pnl sequence series
+        # ---- panda dataframes ----
+        self.df = None                      # main dataframe (candles/indiciators)
+        self.tf = None                      # trade dataframe
+        self.oo = None                      # open orders dataframe
+        self.cc = None                      # closed orders dataframe
+        self.df_cum_margin = None         # cumulative margin dataframe for plotting
+        self.df_cum_pnl = None         # cumulative margin dataframe for plotting
 
-        # Python lists/ dicts 
-        # for dict navigiation, and faster processing (pandas is slow for this)
+        # ---- Order and data lists ----
         self.l_orders_open =[]
         self.l_orders_closed =[]
         self.l_trades =[]
-        self.l_cum_margin = []
         self.axs = []                # finplot axes for plotting
-        self.data = {}  # will hold numpy arrays of df for faster processing
+        self.data = {}               # will hold numpy arrays of df for faster processing
+        
+        # ---- Market info (static) ----
+        self.symbol_data = {} 
+        self.START_MARGIN = 10000.0     # starting margin (KWARGS UPDATED)
+        self.MARKET_SYMBOL = None   
+        self.MARKET_NAME = None       
+        self.MARKET_TYPE = None           # spot or futures
+        self.TICK_CURRENCY = None         # tick currency
+        self.TICK_SIZE = None            # minimum price increment
+        self.TICK_PRICE = None           # minimum price increment
+        self.POINT_SLIPPAGE = None
+        self.TICK_SPREAD = None          # typical spread in ticks
+        self.LOT_CURRENCY = None          # lot currency
+        self.LOT_MIN_SIZE = None        # min contract size
+        self.LOT_INCREMENT = None        # minimum order size increment
+        self.FEE_TYPE = None              # fee round trip per trade
+        self.FEE = None                  # fee amount
 
-        # Account info
-        self.START_MARGIN = 10000.0      # starting margin
-        
-        # Market info
-        self.symbol_data        = symbol_info
-        self.MARKET_SYMBOL      = symbol_info.get('symbol', 'Unknown Symbol')
-        self.MARKET_NAME        = symbol_info.get('name', 'Unknown Market')
-        self.MARKET_TYPE        = symbol_info.get('type', 'futures')           # spot or futures
-        self.TICK_CURRENCY      = symbol_info.get('tick_currency', 'USD')      # tick currency
-        self.TICK_SIZE          = symbol_info.get('tick_size', 0.25)           # minimum price increment
-        self.TICK_PRICE         = symbol_info.get('tick_price', 0.25)          # minimum price increment
-        self.POINT_SLIPPAGE     = symbol_info.get('point_slippage', 1.0)
-        self.TICK_SPREAD        = symbol_info.get('tick_spread', 0)            # typical spread in ticks
-        self.LOT_CURRENCY      = symbol_info.get('lot_currency', 'USD')        # lot currency
-        self.LOT_MIN_SIZE      = symbol_info.get('lot_min_size', 1)            # min contract size
-        self.LOT_INCREMENT     = symbol_info.get('lot_increment', 1)           # minimum order size increment
-        self.FEE_TYPE          = symbol_info.get('fee_type', 'fixed')          # fee round trip per trade
-        self.FEE               = symbol_info.get('fee_value', 1.74)  
-        
-        # ==== DYNANIMC signals, Counters and metrics (will be updated during execution) ====
+        # ---- order metrics (dynamic) ---- update when trades are placed/closed
         
         self.ORDER_ID = 0
+        self.MARGIN = 0 # (KWARGS UPDATED)
+        self.WINS_SHORT = 0 
+        self.WINS_LONG = 0 
+        
+        self.LAST_PNL = 0.0 
+        self.LAST_RAW_PNL = 0.0
+        self.LAST_CUMSUM_PNL = 0.0
+        self.LAST_RETURN = 0.0
+
         self.TOTAL_ORDERS = 0
+        self.TOTAL_TRADES = 0
+        self.TOTAL_SHORTS = 0 
+        self.TOTAL_LONGS = 0 
+        self.TOTAL_WINS = 0 
+
         self.OPEN_ORDERS = 0
         self.OPEN_LIMIT_ORDERS = 0
-        self.TOTAL_TRADES = 0
         self.OPEN_TRADES = 0
 
-        self.TOTAL_SHORTS = 0 #check
-        self.TOTAL_LONGS = 0 #check
-        self.WINS_SHORT = 0 #check
-        self.WINS_LONG = 0 #check
-        self.TOTAL_WINS = 0 #check
+        # ---- metrics (historical track) ---- included within self.update_metrics() PER CLOSED TRADE
         
-        # ==== STATIC Performance metrics (to be calculated at end of execution) ====
+        self.l_MARGIN = []
+        self.l_PNL = []
+        self.l_CUMSUM_PNL = []
+        self.l_RAW_PNL = []
+        self.l_RETURN = []
+        self.l_DATETIME_RETURN = [] # updated in _check_sltp() for returns
+        self.l_PROFIT = []
+        self.l_LOSS = []
         
-        self.WIN_RATE = 0.0 #check
-        self.WIN_RATE_LONG = 0.0 
-        self.WIN_RATE_SHORT = 0.0 
-        self.AVG_PROFIT = 0.0 #check
-        self.AVG_LOSS = 0.0 #check
-        self.TOTAL_PROFIT = 0.0 #check
-        self.TOTAL_LOSS = 0.0 #check
-        self.PAYOFF_RATIO = 0.0 #check
-        self.PROFIT_FACTOR = 0.0 #check
-        self.SHARPE_RATIO_ANNUAL = 0.0 #check
-        self.SORTINO_RATIO_ANNUAL = 0.0 #check
-        self.SHARPE_RATIO_DAILY = 0.0 #check
-        self.SORTINO_RATIO_DAILY = 0.0 #check
-        self.MAX_DRAWDOWN = 0.0 #check
-        self.PNL = 0.0 #check
-        self.PNL_MDD_RATIO = 0.0 #check
+        self.l_DATETIME_PNL = []     # time vs pnl for plotting
+        self.l_DATETIME_MARGIN = []  # time vs margin for plotting
+        self.l_DATETIMES = []        # time vs dates for plotting
 
-        # ----- All KWARGS STORED AS PARAMS -----
+        if self.setting_track_all_metrics:
+            self.l_PAYOFF_RATIO = []
+            self.l_PROFIT_FACTOR = []
+            self.l_SHARPE_RATIO_ANNUAL = []
+            self.l_SHARPE_RATIO_DAILY = []
+            self.l_SORTINO_RATIO_ANNUAL = []
+            self.l_SORTINO_RATIO_DAILY = []
+            self.l_MAX_DRAWDOWN = []
+            self.l_PNL_MDD_RATIO = []
+            self.l_WIN_RATE = []
+            self.l_WIN_RATE_SHORT = []
+            self.l_WIN_RATE_LONG = []
+
+        
+        # ---- metrics (active/dynamic/snapshot/latest) ---- update after trade closes, included within self.update_metrics()
+        
+        self.TOTAL_MARGIN = 0.0
+        self.TOTAL_PNL = 0.0
+        self.TOTAL_RAW_PNL = 0.0
+        self.TOTAL_RETURN = 0.0
+        self.TOTAL_PROFITS = 0.0
+        self.TOTAL_LOSSES = 0.0 
+
+        self.TOTAL_PAYOFF_RATIO = 0.0
+        self.TOTAL_PROFIT_FACTOR = 0.0
+        self.TOTAL_SHARPE_RATIO_ANNUAL = 0.0
+        self.TOTAL_SHARPE_RATIO_DAILY = 0.0
+        self.TOTAL_SORTINO_RATIO_ANNUAL = 0.0
+        self.TOTAL_SORTINO_RATIO_DAILY = 0.0
+        self.TOTAL_MAX_DRAWDOWN = 0.0
+        self.TOTAL_PNL_MDD_RATIO = 0.0
+        self.TOTAL_WIN_RATE = 0.0
+        self.TOTAL_WIN_RATE_LONG = 0.0
+        self.TOTAL_WIN_RATE_SHORT = 0.0
+
+        self.AVERAGE_PROFIT = 0.0
+        self.AVERAGE_LOSS = 0.0
+        self.AVERAGE_RETURN = 0.0
+
+        # ----- All **kwargs stored as params -----
         self.INPUT_PARAMS = kwargs
-        self.init_kwargs = kwargs.copy() # store original kwargs for reference
+        self.INITIAL_KWARGS = kwargs.copy() # store original kwargs for reference
         for key, value in kwargs.items():
             setattr(self, key, value)
 
-        # ----- PARAMS for recalculation -----
-        self.update_data()                                   # user defined function to update indicators etc
-        self.ACTIVE_MARGIN      = self.START_MARGIN                                          # starting margin
-        self.POINT_LEVERAGE     = self.TICK_PRICE/self.TICK_SIZE                   # leverage from symbol data
-        self.TICK_SLIPPAGE      = self.POINT_SLIPPAGE/ self.TICK_SIZE                     # slippage in price terms
+        # ----- params for recalculation -----                                                            
+        self.MARGIN             = self.START_MARGIN                                                           # starting margin
+        self.POINT_LEVERAGE     = self.TICK_PRICE/self.TICK_SIZE if self.TICK_SIZE is not None else 0         # leverage from symbol data
+        self.TICK_SLIPPAGE      = self.POINT_SLIPPAGE/ self.TICK_SIZE if self.TICK_SIZE is not None else 0    # slippage in price terms
 
-        self._setting_rm_buy      = "ceil" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_buy_sl   = "floor" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_buy_tp   = "floor" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_sell     = "floor" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_sell_sl  = "ceil" if self.setting_rounding_method == "worst_case" else "round"
-        self._setting_rm_sell_tp  = "ceil" if self.setting_rounding_method == "worst_case" else "round"
+        self._setting_rm_buy      = Setting.CEIL if self.setting_rounding_method == Setting.ROUND_WORST_CASE else Setting.ROUND
+        self._setting_rm_buy_sl   = Setting.FLOOR if self.setting_rounding_method == Setting.ROUND_WORST_CASE else Setting.ROUND
+        self._setting_rm_buy_tp   = Setting.FLOOR if self.setting_rounding_method == Setting.ROUND_WORST_CASE else Setting.ROUND
+        self._setting_rm_sell     = Setting.FLOOR if self.setting_rounding_method == Setting.ROUND_WORST_CASE else Setting.ROUND
+        self._setting_rm_sell_sl  = Setting.CEIL if self.setting_rounding_method == Setting.ROUND_WORST_CASE else Setting.ROUND
+        self._setting_rm_sell_tp  = Setting.CEIL if self.setting_rounding_method == Setting.ROUND_WORST_CASE else Setting.ROUND
 
-
-    #---- INHERIT AND OVERRIDE THESE METHODS ----
+    # ====== INHERIT AND OVERRIDE THESE METHODS ======
     def buy_condition(self, i):
-        
-        # default strategy: crossover of 9 and 21 EMA
-        # inherit and override this method for custom strategy
+        """ Condition to execute buy_action, return True/False """
         return 0
         
     def sell_condition(self, i):
-        
-        # default strategy: crossover of 9 and 21 EMA
-        # inherit and override this method for custom strategy
-        #return self.data['crossunder'][i] > 0 and self.TOTAL_TRADES < 2
+        """ Condition to execute sell_action, return True/False """
         return 0
 
     def buy_action(self, i):
-
+        """ Logic to execute when buy_condition is true """
         return 0
 
     def sell_action(self, i):
-        
+        """ Logic to execute when sell_condition is true """
         return
 
     def update_data(self):
-
+        """ add needed df updates here, e.g. indicators """
         return
     
     def loop_update(self, i):
+        """ updates to be made each loop (data received) """
+
+        self.l_DATETIME_PNL.append(self.LAST_PNL)
+        self.l_DATETIME_MARGIN.append(self.MARGIN)
+        self.l_DATETIMES.append(self.df.index[i])
+
         return
 
-    #---- FUNCTIONS -----
+    # ====== FUNCTIONS ======
     
+    def _update_data_arrays(self):
+        self.update_data()
+        self.data = {col: self.df[col].to_numpy().copy() for col in self.df.columns}
+        self.data['datetime'] = self.df.index.to_numpy().copy() # Copy allows overriding of values
+        return
+
+    def update_metrics(self):
+       
+        # ---- mandatory list updates first ----
+        self.l_MARGIN.append(self.MARGIN)
+        self.l_PNL.append(self.LAST_PNL)
+        self.l_CUMSUM_PNL.append(self.LAST_CUMSUM_PNL)
+
+        self.l_RAW_PNL.append(self.LAST_RAW_PNL)
+        self.l_RETURN.append(self.LAST_RETURN)
+
+        if self.LAST_PNL > 0:
+            self.l_PROFIT.append(self.LAST_PNL)
+        else:
+            self.l_LOSS.append(self.LAST_PNL)
+
+        # ---- then calculate metric placeholders ----
+
+        AVG_PROFIT = sum(self.l_PROFIT) / len(self.l_PROFIT) if len(self.l_PROFIT) >0 else 0
+        AVG_LOSS = sum(self.l_LOSS) / len(self.l_LOSS) if len(self.l_LOSS) >0 else 0
+        TOTAL_PROFIT = sum(self.l_PROFIT) 
+        TOTAL_LOSS = sum(self.l_LOSS) 
+
+        PAYOFF_RATIO = AVG_PROFIT / abs(AVG_LOSS) if AVG_LOSS != 0 else 0
+        PROFIT_FACTOR = (TOTAL_PROFIT / (TOTAL_LOSS*-1)) if TOTAL_LOSS != 0 else 0
+
+        if len(self.l_RETURN) > 1:
+            SHARPE_RATIO_DAILY = sharpe(self.l_RETURN, self.l_DATETIME_RETURN, mode="daily")
+            SORTINO_RATIO_DAILY = sortino(self.l_RETURN, self.l_DATETIME_RETURN, mode="daily")
+        else:
+            SHARPE_RATIO_DAILY = 0
+            SORTINO_RATIO_DAILY = 0
+
+        SHARPE_RATIO_ANNUAL = SHARPE_RATIO_DAILY * np.sqrt(256)
+        SORTINO_RATIO_ANNUAL = SORTINO_RATIO_DAILY * np.sqrt(256)
+        MAX_DRAWDOWN = max_drawdown(self.l_PNL) 
+        PNL_MDD_RATIO = (self.TOTAL_PNL_MDD_RATIO / abs(MAX_DRAWDOWN)) if MAX_DRAWDOWN != 0 else 0
+        WIN_RATE = (self.TOTAL_WINS / self.TOTAL_TRADES) if self.TOTAL_TRADES >0 else 0
+        WIN_RATE_SHORT = (self.WINS_SHORT / self.TOTAL_SHORTS) if self.TOTAL_SHORTS >0 else 0
+        WIN_RATE_LONG = (self.WINS_LONG / self.TOTAL_LONGS) if self.TOTAL_LONGS >0 else 0
+
+        # ---- update total metrics ----
+
+        self.TOTAL_MARGIN = self.MARGIN
+        self.TOTAL_PNL += self.LAST_PNL
+        self.TOTAL_RAW_PNL += self.LAST_RAW_PNL
+        self.TOTAL_RETURN = ((self.TOTAL_MARGIN - self.START_MARGIN) / self.START_MARGIN) if self.START_MARGIN !=0 else 0
+        self.TOTAL_PROFITS = sum(self.l_PROFIT)
+        self.TOTAL_LOSSES = sum(self.l_LOSS)
+
+        self.TOTAL_PAYOFF_RATIO = PAYOFF_RATIO
+        self.TOTAL_PROFIT_FACTOR = PROFIT_FACTOR
+        self.TOTAL_SHARPE_RATIO_DAILY = SHARPE_RATIO_DAILY
+        self.TOTAL_SHARPE_RATIO_ANNUAL = SHARPE_RATIO_ANNUAL
+        self.TOTAL_SORTINO_RATIO_DAILY = SORTINO_RATIO_DAILY
+        self.TOTAL_SORTINO_RATIO_ANNUAL = SORTINO_RATIO_ANNUAL
+        self.TOTAL_MAX_DRAWDOWN = MAX_DRAWDOWN
+        self.TOTAL_PNL_MDD_RATIO = self.TOTAL_PNL/self.TOTAL_MAX_DRAWDOWN*-1 if self.TOTAL_MAX_DRAWDOWN !=0 else 0
+        self.TOTAL_WIN_RATE = WIN_RATE
+        self.TOTAL_WIN_RATE_LONG = WIN_RATE_LONG
+        self.TOTAL_WIN_RATE_SHORT = WIN_RATE_SHORT
+
+        self.AVERAGE_PROFIT = sum(self.l_PROFIT)/len(self.l_PROFIT) if len(self.l_PROFIT) >0 else 0
+        self.AVERAGE_LOSS = sum(self.l_LOSS)/len(self.l_LOSS) if len(self.l_LOSS) >0 else 0
+        self.AVERAGE_RETURN = sum(self.l_RETURN)/len(self.l_RETURN) if len(self.l_RETURN) >0 else 0
+
+         # ---- Additionally track metrics ----
+        if self.setting_track_all_metrics:
+            self.l_PAYOFF_RATIO.append(PAYOFF_RATIO)
+            self.l_PROFIT_FACTOR.append(PROFIT_FACTOR)
+            self.l_SHARPE_RATIO_ANNUAL.append(SHARPE_RATIO_ANNUAL)
+            self.l_SHARPE_RATIO_DAILY.append(SHARPE_RATIO_DAILY)
+            self.l_SORTINO_RATIO_ANNUAL.append(SORTINO_RATIO_ANNUAL)
+            self.l_SORTINO_RATIO_DAILY.append(SORTINO_RATIO_DAILY)
+            self.l_MAX_DRAWDOWN.append(MAX_DRAWDOWN)
+            self.l_PNL_MDD_RATIO.append(PNL_MDD_RATIO)
+            self.l_WIN_RATE.append(WIN_RATE)
+            self.l_WIN_RATE_SHORT.append(WIN_RATE_SHORT)
+            self.l_WIN_RATE_LONG.append(WIN_RATE_LONG)
+
+        self.MARGIN = self.START_MARGIN + self.TOTAL_PNL  # update margin after trade closes
+        self.TOTAL_MARGIN = self.MARGIN
+
+
+
+        # calculate performance metrics
+        return
+
     def plots(self, rows=2, **kwargs):
     
         boxes=kwargs.get('boxes', False)
@@ -182,6 +330,7 @@ class Strategy:
         # ---- CHECKS ----
         if self._check_qty(qty) == 0:
             return
+        
          # ---- calculate entry, sl and tp prices with slippage and rounding ----
         _entry_price = self._round_to_tick(self.data['open'][i] - self._slippage(self.setting_slippage_entry), self._setting_rm_sell)
 
@@ -193,7 +342,7 @@ class Strategy:
                 _sl_price = self._round_to_tick(sl_price + self._slippage(self.setting_slippage_sl), self._setting_rm_sell_sl)
                 _tp_price = self._round_to_tick(tp_price + self._slippage(self.setting_slippage_tp), self._setting_rm_sell_tp)
         except Exception as e:
-            log.error(f"Error calculating SL/TP prices: {e}")
+            log.error(f"❌ Error calculating SL/TP prices: {e}")
 
           # ---- market order ----
         self.l_orders_open.append({ 'trade_id': self.ORDER_ID,
@@ -252,7 +401,7 @@ class Strategy:
                 _sl_price = self._round_to_tick(sl_price - self._slippage(self.setting_slippage_sl), self._setting_rm_buy_sl)
                 _tp_price = self._round_to_tick(tp_price - self._slippage(self.setting_slippage_tp), self._setting_rm_buy_tp)
         except Exception as e:
-            log.error(f"Error calculating SL/TP prices: {e}")
+            log.error(f"❌ Error calculating SL/TP prices: {e}")
 
           # ---- market order ----
         self.l_orders_open.append({ 'trade_id': self.ORDER_ID,
@@ -338,15 +487,24 @@ class Strategy:
                 self.OPEN_LIMIT_ORDERS -=2
                 self.OPEN_ORDERS -=1
                 self.OPEN_TRADES -=1
-                previous_margin = self.ACTIVE_MARGIN
-                self.ACTIVE_MARGIN += tp_pnl-fee-spread
-                
+                previous_margin = self.MARGIN
+
+                self.LAST_RAW_PNL = tp_pnl
+                self.LAST_PNL = tp_pnl-fee-spread
+                self.LAST_CUMSUM_PNL += self.LAST_PNL
+                self.MARGIN += self.LAST_PNL
+
+                self.LAST_RETURN = self.LAST_PNL/previous_margin if previous_margin !=0 else 0
+                self.l_DATETIME_RETURN.append(self.data['datetime'][i])
+
                 if order_side =='buy':
                     self.WINS_LONG +=1
                     self.TOTAL_WINS +=1
                 else: 
                     self.WINS_SHORT +=1
                     self.TOTAL_WINS +=1
+
+                self.update_metrics() 
 
                 # add trade order record
                 self.l_trades.append({  'trade_id': trade_id,
@@ -362,9 +520,9 @@ class Strategy:
                                         'raw_pnl': tp_pnl, 
                                         'fee': fee, 
                                         'spread': spread, 
-                                        'pnl':tp_pnl - fee - spread,
-                                        'margin': self.ACTIVE_MARGIN,
-                                        'return': (tp_pnl - fee-spread)/(previous_margin) if previous_margin !=0 else 0,
+                                        'pnl': self.LAST_PNL,
+                                        'margin': self.MARGIN,
+                                        'return': self.LAST_RETURN,
                                         'comments': ''})
                 
                 # remove from open_orders
@@ -397,9 +555,17 @@ class Strategy:
                 self.OPEN_LIMIT_ORDERS -=2
                 self.OPEN_ORDERS -=1
                 self.OPEN_TRADES -=1
-                previous_margin = self.ACTIVE_MARGIN
-                self.ACTIVE_MARGIN += sl_pnl-fee-spread
+                previous_margin = self.MARGIN
 
+                self.LAST_RAW_PNL = sl_pnl
+                self.LAST_PNL = sl_pnl-fee-spread
+                self.LAST_CUMSUM_PNL += self.LAST_PNL
+                self.MARGIN += self.LAST_PNL
+                
+                self.LAST_RETURN = self.LAST_PNL/previous_margin if previous_margin !=0 else 0
+                self.l_DATETIME_RETURN.append(self.data['datetime'][i])
+
+                self.update_metrics() 
 
                 # add trade order record
                 self.l_trades.append({  'trade_id': trade_id,
@@ -413,11 +579,11 @@ class Strategy:
                                         'sl': order_sl['price'], 
                                         'tp': order_tp['price'], 
                                         'raw_pnl': sl_pnl,
-                                        'fee':fee,
+                                        'fee': fee,
                                         'spread': spread,
-                                        'pnl':sl_pnl-fee-spread,
-                                        'margin': self.ACTIVE_MARGIN,
-                                        'return': (sl_pnl-fee-spread)/(previous_margin) if previous_margin !=0 else 0,
+                                        'pnl': self.LAST_PNL,
+                                        'margin': self.MARGIN,
+                                        'return': self.LAST_RETURN,
                                         'comments': ''})
                         
                 #move remove from open_orders
@@ -439,7 +605,7 @@ class Strategy:
                 self.l_orders_closed.append(order_tp)
                 continue
 
-    #---- INTERNAL FUNCTIONS -----
+    # ====== INTERNAL FUNCTIONS ======
     @final
     def _fee(self, qty, price):
 
@@ -457,11 +623,11 @@ class Strategy:
     @final
     def _round_to_tick(self, price, method):
 
-        if method == "round":
+        if method == Setting.ROUND:
             return round(price / self.TICK_SIZE) * self.TICK_SIZE
-        elif method == "floor":
+        elif method == Setting.FLOOR:
             return (price // self.TICK_SIZE) * self.TICK_SIZE
-        elif method == "ceil":
+        elif method == Setting.CEIL:
             return (-( -price // self.TICK_SIZE)) * self.TICK_SIZE
         else:
             raise ValueError(f"Unknown rounding method: {method}")
@@ -469,21 +635,21 @@ class Strategy:
     @final
     def _slippage(self, setting):
 
-        if setting == "off":
+        if setting == Setting.SLIP_OFF:
             return 0.0
-        elif setting == "worst_case":
+        elif setting == Setting.SLIP_WORST_CASE:
             return self.POINT_SLIPPAGE
-        elif setting == "random":
-            return self._round_to_tick(np.random.uniform(-self.POINT_SLIPPAGE, self.POINT_SLIPPAGE), "round")
+        elif setting == Setting.SLIP_RANDOM:
+            return self._round_to_tick(np.random.uniform(-self.POINT_SLIPPAGE, self.POINT_SLIPPAGE), Setting.ROUND)
 
     @final
     def _check_qty(self, qty):
 
         if qty < self.LOT_MIN_SIZE:
-            log.warning(f"Order qty {qty} is less than min lot size {self.LOT_MIN_SIZE}")  
+            log.warning(f"🚧 Order qty {qty} is less than min lot size {self.LOT_MIN_SIZE}")  
             return 0
-        if not math.isclose(qty / self.LOT_INCREMENT % 1, 0, abs_tol=9e-03):
-            log.warning(f"Order qty {qty} not compatible with lot increment {self.LOT_INCREMENT}")
+        if not math.isclose(qty % self.LOT_INCREMENT, 0, abs_tol=9e-01):
+            log.warning(f"🚧 Order qty {qty} not compatible with lot increment {self.LOT_INCREMENT}")
             return 0
         return 1
 
@@ -491,12 +657,12 @@ class Strategy:
     
 
 
-
-
-
-
 if __name__ == "__main__":
 
+    qty = 10.2
+    increment = 0.1
+    print(qty % increment)
+    print(math.isclose(qty % increment, 0, abs_tol=9e-01))
     pass
 
 
