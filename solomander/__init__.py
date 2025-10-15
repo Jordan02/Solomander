@@ -3,7 +3,7 @@ from .data import load_yfinance, load_binance, load_symbol
 from .logger import log, stamp, pront, set_log_level
 from .indicators import vwap, timeblock, sessions, timeband
 from .baseStrategy import Strategy, Setting
-from .visuals import plot_trades, plot_timeblock, plot_timeband
+from .visuals import plot_trades, plot_timeblock, plot_timeband, basic_graph
 from .analysis import monte_carlo, monte_carlo_metric, _plot_histogram, noise_test
 from .optimsation import Optimise
 from .utils import sharpe, sortino, max_drawdown, random_color, timedelta_to_str, print_boxed_title, adjust_opacity, shift_hue
@@ -22,7 +22,7 @@ __all__ = [
     "log", "stamp", "pront", "set_log_level",
     "vwap", "timeblock", "sessions", "timeband",
     "Strategy", "Setting",
-    "plot_trades", "plot_timeblock", "plot_timeband",
+    "plot_trades", "plot_timeblock", "plot_timeband", "basic_graph",
     "monte_carlo", "monte_carlo_metric", "_plot_histogram", "noise_test",
     "Optimise",
     "sharpe", "sortino", "max_drawdown", "random_color", "timedelta_to_str", "print_boxed_title", "adjust_opacity", "shift_hue",

@@ -15,14 +15,14 @@ try:
     from .data import load_yfinance
     from .utils import max_drawdown, sharpe, sortino, timedelta_to_str, print_boxed_title
     from .visuals import plot_trades
-    from .baseStrategy import Strategy
+    from .baseStrategy import Strategy, Setting 
 except ImportError:
     from indicators import vwap, timeband, sessions
     from logger import log, stamp, pront
     from data import load_yfinance
     from utils import max_drawdown, sharpe, sortino, timedelta_to_str, print_boxed_title
     from visuals import plot_trades
-    from solomander.baseStrategy import Strategy
+    from solomander.baseStrategy import Strategy, Setting
 
 
 
@@ -37,10 +37,14 @@ class _BacktesterStrategy:
     
         self.s._update_data_arrays()  # initial update of data arrays
 
-        # Backtest-only fields
+        # New parameters fields
         self.s.TIME_INTERVAL     = self.s.df.index.to_series().diff().dropna().min()
         self.s.TIME_INTERVAL_STR = timedelta_to_str(self.s.TIME_INTERVAL)
-        self.s.TEST_DAYS         = max(1, np.busday_count(self.s.df.index[0].date(), self.s.df.index[-1].date()))
+        self.s.TEST_MODE = Setting.MODE_BACKTEST
+        self.s.TIME_START = self.s.df.index[0]
+        self.s.TIME_END = self.s.df.index[-1]
+        self.s.TIME_ELAPSED = self.s.TIME_END - self.s.TIME_START
+        self.s.TIME_WORK_DAYS = np.busday_count(self.s.TIME_START.date(), self.s.TIME_END.date())
 
         # any market params you want (store them here; use in wrappers as needed)
         self.s.symbol_data        = symbol_info.copy()
@@ -101,7 +105,7 @@ class Backtester():
         
         # update instance with backtester methods
         self.wrapper = _BacktesterStrategy(strategy_instance, df, symbol_info)  
-       
+        
 
     # ------ UNIQUE BACKTESTER METHODS ------
     @final
@@ -177,7 +181,7 @@ class Backtester():
         print_boxed_title("TEST METRICS")
         pront.info(f"{'Start Date:':<{label_width}} {s.df.index[0]}")
         pront.info(f"{'End Date:':<{label_width}} {s.df.index[-1]}")
-        pront.info(f"{'Total Days:':<{label_width}} {s.TEST_DAYS}")
+        pront.info(f"{'Total Days:':<{label_width}} {s.TIME_ELAPSED}")
         pront.info(f"{'Total Trades:':<{label_width}} {s.TOTAL_TRADES}")
         pront.info(f"{'Total Longs:':<{label_width}} {s.TOTAL_LONGS}")
         pront.info(f"{'Total Shorts:':<{label_width}} {s.TOTAL_SHORTS}")

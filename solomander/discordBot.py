@@ -12,11 +12,6 @@ from zoneinfo import ZoneInfo
 import io
 import asyncio
 
-import matplotlib
-matplotlib.use("Agg")  # non-GUI backend (for servers / threads)
-import matplotlib.pyplot as plt
-import mplcyberpunk as cyberpunk
-
 try: 
     from .logger import log, stamp, pront
     from .mt5 import MT5_live
@@ -28,37 +23,10 @@ except ImportError:
     from baseStrategy import Strategy
   
 
-def basic_discord_graph(x,y,color="#2ecc71",xlabel="X-axis",ylabel="Y-axis"):
-
-    # generate your plot
-    plt.style.use("cyberpunk")
-    fig, ax = plt.subplots(figsize=(4, 3), dpi=300)
-    ax.plot(x, y, color=color, marker='o')
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    cyberpunk.add_glow_effects()
-
-    # remove background
-    fig.patch.set_alpha(0.0)       # transparent figure background
-    ax.set_facecolor("none")       # transparent plotting area
-    ax.grid(True, alpha=0.2, color="#ffffff")
-    ax.grid(False, axis="x")
-
-
-    # save to a BytesIO buffer instead of disk
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", bbox_inches="tight")
-    buf.seek(0)
-    plt.close(fig)
-
-    # send it to Discord
-    return discord.File(buf, filename="chart.png")
-
-
-
 class DiscordBot:
     def __init__(self, mt5_live: MT5_live = None):
         
+        self.main_channel_id = 1426314357788246036  # default main channel
         self.live_bot = mt5_live
    
         self.am_ready = threading.Event()
@@ -111,9 +79,9 @@ class DiscordBot:
             stamp.show(f"[Discord] {ctx.author}: {message}")
             await ctx.send(message)
 
-        @self.bot.command(name="shutdown")
+        @self.bot.command(name="stop")
         
-        async def shutdown(ctx):
+        async def stop(ctx):
             """Stops both Discord bot and MT5 event loop"""
 
             if self._live_bot_attached.is_set():
@@ -130,88 +98,81 @@ class DiscordBot:
                 await ctx.send("😬 Live runner not attached sorry...")
                 stamp.warning("[Discord] 😬 Live runner not attached sorry...")
 
+        # === visualisation ===
 
         @self.bot.command(name="stats")
         async def stats(ctx):
             """Shows currents stats"""
 
             if self._live_bot_attached.is_set():
-                bot = self.live_bot.wrapper.s
-                color = "#E5FF00"
-                discord_color= int(color.replace("#", ""), 16)
-                start_time = self.live_bot.TIME_START
-                current_time = datetime.now(ZoneInfo("Europe/London"))
-                time_elapsed = current_time - start_time
-
-                start_time_str = start_time.strftime("%d/%m/%y %H:%M %Z")
-                time_elapsed_str = str(time_elapsed).split('.')[0]  # remove microseconds for cleaner display
                 
-                embed = discord.Embed(
-                    title="📊 Current Stats Dashboard",
-                    color=discord_color,
-                    timestamp=datetime.now(timezone.utc)
-                )
+                bot = self.live_bot.wrapper.s
 
-                column1 = (
-                    
-                    f"Total PnL: `{bot.TOTAL_PNL:.2f} {bot.TICK_CURRENCY}`\n"
-                    f"Margin: `{bot.TOTAL_MARGIN:.2f} {bot.TICK_CURRENCY}`\n"
-                    f"Total Return: `{bot.TOTAL_RETURN*100:.2f}%`\n"
-                    f"Profit Factor: `{bot.TOTAL_PROFIT_FACTOR:.2f}`\n"
-                    f"Max Drawdown: `{bot.TOTAL_MAX_DRAWDOWN:.2f} {bot.TICK_CURRENCY}`\n"
-                    f"Payoff Ratio: `{bot.TOTAL_PAYOFF_RATIO:.2f}`\n"
-                    f"Sharpe (Annual): `{bot.TOTAL_SHARPE_RATIO_ANNUAL:.2f}`\n"
-                    f"Sharpe (Daily): `{bot.TOTAL_SHARPE_RATIO_DAILY:.2f}`\n"
-                    f"Sortino (Annual): `{bot.TOTAL_SORTINO_RATIO_ANNUAL:.2f}`\n"
-                    f"Sortino (Daily): `{bot.TOTAL_SORTINO_RATIO_DAILY:.2f}`\n"
-                    f"PnL/MDD Ratio: `{bot.TOTAL_PNL_MDD_RATIO:.2f}`\n\n"
-                )
-        
-                column2 = (
-                    f"Start time `{start_time_str}`\n"
-                    f"Elapsed time `{time_elapsed_str}`\n"
-                    f"Total Trades: `{bot.TOTAL_TRADES}`\n"
-                    f"Open Trades: `{bot.OPEN_TRADES}`\n"
-                    f"Total Longs: `{bot.TOTAL_LONGS}`\n"
-                    f"Total Shorts: `{bot.TOTAL_SHORTS}`\n"
-                    f"Win Rate: `{bot.TOTAL_WIN_RATE*100:.2f}%`\n"
-                    f"Win Rate Long: `{bot.TOTAL_WIN_RATE_LONG*100:.2f}%`\n"
-                    f"Win Rate Short: `{bot.TOTAL_WIN_RATE_SHORT*100:.2f}%`\n"
-                    f"Average Profit: `{bot.AVERAGE_PROFIT:.2f} {bot.TICK_CURRENCY}`\n"
-                    f"Average Loss: `{bot.AVERAGE_LOSS:.2f} {bot.TICK_CURRENCY}`\n"
-                    f"Average Return: `{bot.AVERAGE_RETURN*100:.2f}%`\n"
-     
-                )
+                embed,files = self._embed(bot.discord_stats())
+                
+                embed.set_footer(text=f"For {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
 
-                # ---- ADD COLUMNS ----
-                embed.add_field(name="", value=column1, inline=True)
-                embed.add_field(name="", value=column2, inline=True)
-            
-
-                # ---- ADD PNL CHART ----
-                file = basic_discord_graph(
-                    np.arange(len(bot.l_CUMSUM_PNL)),
-                    bot.l_CUMSUM_PNL,
-                    xlabel="Trades",
-                    ylabel="Pnl",
-                    color=color
-                )
-                embed.set_image(url="attachment://chart.png")
-
-                # ---- FOOTER ----
-                embed.set_footer(
-                    text=f"For {ctx.author.display_name}",
-                    icon_url=ctx.author.display_avatar.url
-                )
-
+                await ctx.send(embed=embed, files=files)
                 stamp.show(f"[Discord] {ctx.author} requested stats in {ctx.channel}.")
-                await ctx.send(embed=embed, file=file)
             else:
                 await ctx.send("😬 eh Live runner not attached sorry...")
                 stamp.warning("[Discord] 😬 Live runner not attached sorry...")
 
+        @self.bot.command(name="market")
+        async def market(ctx):
 
-    def post_fig(self, buf: io.BytesIO, message: str, channel_id = 1426314357788246036, color="#237ce0"):
+            """Shows market info"""
+
+            if self._live_bot_attached.is_set():
+
+                embed, files = self._embed(self.live_bot.wrapper.s.discord_market())
+                embed.set_footer(text=f"For {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
+
+                await ctx.send(embed=embed, files=files)
+                stamp.show(f"[Discord] {ctx.author} requested market data in {ctx.channel}.")
+            else:
+                await ctx.send("😬 eh Live runner not attached sorry...")
+                stamp.warning("[Discord] 😬 Live runner not attached sorry...")
+
+        @self.bot.command(name="settings")
+        async def settings(ctx):
+
+            '''Shows input parameters'''
+
+            if self._live_bot_attached.is_set():
+                
+                embed, files = self._embed(self.live_bot.s.discord_settings())
+                embed.set_footer(text=f"For {ctx.author.display_name}",icon_url=ctx.author.display_avatar.url)
+
+                await ctx.send(embed=embed, files=files)
+                stamp.show(f"[Discord] {ctx.author} requested market data in {ctx.channel}.")
+            else:
+                await ctx.send("😬 eh Live runner not attached sorry...")
+                stamp.warning("[Discord] 😬 Live runner not attached sorry...")
+            
+        @self.bot.command(name="inputs")
+        async def inputs(ctx):
+
+            '''Shows input parameters'''
+
+            if self._live_bot_attached.is_set():
+                
+                embed,files = self._embed(self.live_bot.s.discord_inputs())
+                embed.set_footer(text=f"For {ctx.author.display_name}",icon_url=ctx.author.display_avatar.url)
+
+                await ctx.send(embed=embed, files=files)
+                stamp.show(f"[Discord] {ctx.author} requested market data in {ctx.channel}.")
+            else:
+                await ctx.send("😬 eh Live runner not attached sorry...")
+                stamp.warning("[Discord] 😬 Live runner not attached sorry...")
+                
+                
+
+
+    def post_fig(self, buf: io.BytesIO, message: str, channel_id = None, color="#237ce0"):
+
+        if channel_id is None:
+            channel_id = self.main_channel_id
 
         stamp.show("[Discord] 📈 Sending figure to Discord...")
         if not self.bot.is_ready():
@@ -242,8 +203,75 @@ class DiscordBot:
 
     
         return
- 
+    
+    def post_message(self, message: str, channel_id = None):
+        
+        if channel_id is None:
+            channel_id = self.main_channel_id
+
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            stamp.error("[Discord] ❌ Channel not found.")
+            return
+
+        future = asyncio.run_coroutine_threadsafe(
+        channel.send(content=message),
+        self.bot.loop
+        )
+        try:
+            future.result()  # wait for send to complete (optional)
+            stamp.success("[Discord] ✅ Message sent successfully!")
+        except Exception as e:
+            stamp.error(f"[Discord] ❌ Failed to send message: {e}")
+
+    def post_embed(self, to_embed, channel_id = None ):
+        """ Line for multiple embed files, and single image """
+        
+        if channel_id is None:
+            channel_id = self.main_channel_id
+
+        channel = self.bot.get_channel(channel_id)
+
+        embed,files = self._embed(to_embed)
+
+        future = asyncio.run_coroutine_threadsafe(
+        channel.send(embed=embed,files=files),
+        self.bot.loop
+        )
+        try:
+            future.result()
+            stamp.success("[Discord] ✅ Embed sent successfully!")
+        except Exception as e:
+            stamp.error(f"[Discord] ❌ Failed to send embed: {e}")
+
+        return
        
+    def _embed(self, to_embed):
+        
+        embed_data = to_embed[0]
+        color = int(to_embed[1].replace("#", ""), 16)
+        title = to_embed[2]
+        embed = discord.Embed(title=title,color=color,timestamp=datetime.now(timezone.utc))
+        files = []
+
+        for i, section in enumerate(embed_data):
+            typ = section.get("type")
+            val = section.get("value")
+            inline = section.get("inline", True)
+            name = section.get("title", "")
+
+            if typ == "text":
+                embed.add_field(name=name or " ", value=val, inline=inline)
+
+            elif typ == "file" and val:
+                
+                file = discord.File(val, filename=f"figure_{i}.png")
+                files.append(file)
+                embed.set_image(url=f"attachment://figure_{i}.png")  
+    
+
+        return embed, files
+        
 
 
 if __name__ == "__main__":

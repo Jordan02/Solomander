@@ -17,6 +17,7 @@ import discord
 from discord.ext import commands
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import numpy as np
 
 
 try: 
@@ -137,7 +138,7 @@ def mt5_hdata(symbol: str, mt5_time_interval, candle_lookback: int = 1000, candl
     
     # ----- CHECK IF FILE EXISTS -----
     interval_str = MT5_TIMEFRAMES.get(mt5_time_interval, "unknown")
-    filename = f"mt5_{symbol}_{candle_lookback}c_{interval_str}.csv".replace("-", "").replace("/", "-")
+    filename = f"mt5_{symbol}_{candle_lookback}c_{candle_offset}o_{interval_str}.csv".replace("-", "").replace("/", "-")
     df = _load_data(filename) 
     if df is not None:
         stamp.success(f"✅ Data loaded from data/{filename} Opening now queen.")
@@ -174,7 +175,7 @@ def _mt5_format_data(mt5_rates) -> pd.DataFrame:
 
 class _mt5Strategy():
 
-    def __init__(self, strategy_instance: Strategy, df: pd.DataFrame, symbol_info: dict, deviation, test_mode = True):
+    def __init__(self, strategy_instance: Strategy, df: pd.DataFrame, symbol_info: dict):
         
         self.s = strategy_instance                      # keep the original instance
         self.s.df = df.copy()
@@ -185,8 +186,6 @@ class _mt5Strategy():
         self.s.setting_slippage_tp = Setting.SLIP_OFF
         self.s.setting_rounding_method = Setting.ROUND_NEAREST
         
-        self.s.DEVIATION = deviation
-        self.s.TEST_MODE = test_mode   # if False will place live trades (use with caution!)
 
         # any market params you want (store them here; use in wrappers as needed)
         self.s.symbol_data        = symbol_info.copy()
@@ -249,7 +248,7 @@ class _mt5Strategy():
         self.sell_bracket_original(i, qty, sl_price, tp_price, sl_pips, tp_pips, comments)
         
         # ------- Send the MT5 market order -------
-        if self.s.TEST_MODE is True:
+        if self.s.TEST_MODE is Setting.MODE_TEST:
             stamp.success(f"🔽🧪[TEST MODE]: SELL (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
             return
         else:
@@ -299,7 +298,7 @@ class _mt5Strategy():
         
 
         # ------- Send the MT5 market order -------
-        if self.s.TEST_MODE is True:
+        if self.s.TEST_MODE is Setting.MODE_TEST:
             stamp.success(f"🔼🧪[TEST MODE]: BUY (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
             return
         else:
@@ -334,49 +333,56 @@ class MT5_live(Strategy):
 
     def __init__(self, strategy_instance: Strategy, symbol_str = "US100.cash", timeframe = mt5.TIMEFRAME_M5, candle_buffer = 500, poll_interval = 5, test_mode = True, **kwargs):
         
-        # ----- ENSURE MT5 LOGIN -----
-        mt5_login()
 
-        mt5.symbol_select(symbol_str, True)
-        market_info = mt5_symbol_info(symbol_str)
-
-        self.TIME_INTERVAL_MT5 = timeframe 
-        self.CANDLE_BUFFER = candle_buffer
-        self.POLL_INTERVAL = poll_interval
-        self.TIME_START = datetime.now(ZoneInfo("Europe/London"))
-
-        self.wrapper = _mt5Strategy(strategy_instance, 
-                                    df=pd.DataFrame(), 
-                                    symbol_info=market_info,
-                                    deviation=10,
-                                    test_mode=test_mode   
-                                    )
-        
-        self.s = self.wrapper.s  # shortcut to strategy instance
-         
-        # ----- NEW PARAMETERS -----
+        # ----- Runner params -----
         self.setting_password = str(os.getenv('MT5_BOT_PASSWORD', '123'))  # default password if not set in .env
+        self._ask_password = threading.Event()
+        self._ask_password.clear() #switch off
+        self._password_verified = threading.Event()
+        self._password_verified.clear() #switch off
         self.setting_listen_time = 0.25 #seconds
+
         self._running = threading.Event()
         self._running.set() #switch on
-
         self.discord_bot = None
         self._discord_attached = threading.Event()
         self._discord_attached.clear() #switch off
-        
-        self._ask_password = threading.Event()
-        self._ask_password.clear() #switch off
-
         self._bar_needs_closed = threading.Event()
         self._bar_needs_closed.clear()
-
-        self._password_verified = threading.Event()
-        self._password_verified.clear() #switch off
-        self.bot=None  
+        self.bot = None # discord bot instance
 
         # Console listen thread for stop command
         self.___console_listener = threading.Thread(target=self._console_ear, daemon=True)
         self.___console_listener.start()
+
+        # ----- Ask for password -----
+        self._ask_password.set()
+        stamp.input("Enter in password:")
+        while self._password_verified.is_set() is False:
+            time.sleep(self.setting_listen_time) 
+
+        # ----- ENSURE MT5 LOGIN -----
+        mt5_login()
+
+        self.wrapper = _mt5Strategy(strategy_instance, 
+                                    df=pd.DataFrame(), 
+                                    symbol_info=mt5_symbol_info(symbol_str)  
+                                    )
+        
+        self.wrapper.s.TEST_MODE = Setting.MODE_TEST if test_mode else Setting.MODE_LIVE
+        self.wrapper.s.TIME_INTERVAL = timeframe 
+        self.wrapper.s.TIME_INTERVAL_STR = MT5_TIMEFRAMES.get(self.wrapper.s.TIME_INTERVAL, "unknown")
+        self.wrapper.s.CANDLE_BUFFER = candle_buffer
+        self.wrapper.s.POLL_INTERVAL = poll_interval
+        self.wrapper.s.TIME_START = datetime.now(ZoneInfo("Europe/London"))
+        self.wrapper.s.TIME_ELAPSED = None
+        self.wrapper.s.TIME_WORK_DAYS = None
+        self.wrapper.s.DEVIATION = 10
+        self.wrapper.s.setting_listen_time = self.setting_listen_time
+
+        self.s = self.wrapper.s  # shortcut to strategy instance
+         
+        
      
     
 
@@ -386,7 +392,7 @@ class MT5_live(Strategy):
 
         # ----- RETRIEVE DATA -----
         try:
-            rates = mt5.copy_rates_from_pos(self.wrapper.s.MARKET_SYMBOL, self.TIME_INTERVAL_MT5, 0, candles)
+            rates = mt5.copy_rates_from_pos(self.wrapper.s.MARKET_SYMBOL, self.wrapper.s.TIME_INTERVAL, 0, candles)
         except Exception as e:
             log.error(f"❌ MT5 download error {self.wrapper.s.MARKET_SYMBOL}: {e}")
             return pd.DataFrame()
@@ -437,14 +443,9 @@ class MT5_live(Strategy):
 
     def mt5_stream(self):
 
-        # ----- Wait for password -----
-        self._ask_password.set()
-        stamp.input("Enter in password:")
-        while self._password_verified.is_set() is False:
-            time.sleep(self.setting_listen_time) 
-
+        
         # ----- udpate date -----
-        self.wrapper.s.df = self._mt5_fetch_latest(self.CANDLE_BUFFER)  # initial fetch to set up    
+        self.wrapper.s.df = self._mt5_fetch_latest(self.wrapper.s.CANDLE_BUFFER)  # initial fetch to set up    
         self.wrapper.s._update_data_arrays()
         
         # ----- is discord bot connected? -----
@@ -458,17 +459,17 @@ class MT5_live(Strategy):
         for key, value in self.wrapper.s.INPUT_PARAMS.items():
             pront.info(f"{key + ':':<{label_width}} {value}")
 
-    
+
         try:
             while self._running.is_set():
 
-                next_time = time.time()+ self.POLL_INTERVAL
+                next_time = time.time()+ self.wrapper.s.POLL_INTERVAL
                 
                 # ----- LOOP LOGIC -----
                 stamp.info(f"🔄 datetime: {self.wrapper.s.df.index[-1].strftime('%H:%M:%S')} close: {self.wrapper.s.df['close'].iloc[-1]}")
                 
                 self.wrapper.s.loop_update(-1)
-                self.wrapper.s.df = self._mt5_fetch_latest(self.CANDLE_BUFFER)  # fetch latest data
+                self.wrapper.s.df = self._mt5_fetch_latest(self.wrapper.s.CANDLE_BUFFER)  # fetch latest data
                 self.wrapper.s._update_data_arrays()
 
                 # buy logic (one trade per bar)
@@ -486,7 +487,6 @@ class MT5_live(Strategy):
                 
                 self._check_new_bar() 
                 self.wrapper.s._check_market_sltp(-1)
-
 
                 # ----- END LOOP LOGIC -----
                 sleep_time = max(0, next_time - time.time())

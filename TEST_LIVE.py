@@ -129,8 +129,16 @@ if DISCORD_BOT:
     matplotlib.use("Agg")  
     bot = s.DiscordBot(mt5_bot)
     bot.am_ready.wait()  #wait till bot is ready
+    
+    bot.post_message(f"Hello Jordan 😊 Solomander here!")
+    bot.post_message(f"Strategy is now live, using the following settings:")
+    bot.post_embed(strategy.discord_settings())
+    bot.post_embed(strategy.discord_market())
 else:
     matplotlib.use("TkAgg")
+
+
+
 
 mt5_bot.mt5_stream()
 

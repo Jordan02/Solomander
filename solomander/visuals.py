@@ -2,6 +2,12 @@ import finplot as fplt
 import pandas as pd
 import pyqtgraph as pg
 
+import matplotlib
+matplotlib.use("Agg")  # non-GUI backend (for servers / threads)
+import matplotlib.pyplot as plt
+import mplcyberpunk as cyberpunk
+import io
+
 
 try:
 
@@ -80,3 +86,35 @@ def plot_timeband(df, column, ax, color="#bdbdbd40", title=""):
 
     for day, group in df_band.groupby(df_band.index.date):
         fplt.add_vertical_band(group.index[0], group.index[-1], color=color)
+
+
+def basic_graph(x,y,color="#2ecc71",xlabel="X-axis",ylabel="Y-axis", discord=True):
+
+    # generate your plot
+    plt.style.use("cyberpunk")
+    fig, ax = plt.subplots(figsize=(4, 3), dpi=300)
+    ax.plot(x, y, color=color, marker='o')
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    cyberpunk.add_glow_effects()
+
+    ax.grid(True, alpha=0.2, color="#ffffff")
+    ax.grid(False, axis="x")
+    plt.tight_layout(pad=0.5)
+
+    if discord:
+        #remove background
+        fig.patch.set_alpha(0.0)   
+        ax.set_facecolor("none")       
+
+        # save to a BytesIO buffer instead of disk
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png", bbox_inches="tight")
+        buf.seek(0)
+        plt.close(fig)
+        return buf
+    else:
+        plt.show()
+        return fig
+
+    

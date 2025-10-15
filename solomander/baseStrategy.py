@@ -8,6 +8,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import math
 from enum import Enum, auto
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from typing import final
 
@@ -16,13 +18,13 @@ try:
     from .logger import log, stamp, pront
     from .data import load_yfinance
     from .utils import max_drawdown, sharpe, sortino, timedelta_to_str, print_boxed_title
-    from .visuals import plot_trades
+    from .visuals import plot_trades, basic_graph
 except ImportError:
     from indicators import vwap, timeband, sessions
     from logger import log, stamp, pront
     from data import load_yfinance
     from utils import max_drawdown, sharpe, sortino, timedelta_to_str, print_boxed_title
-    from visuals import plot_trades
+    from visuals import plot_trades, basic_graph
     
 
 
@@ -37,6 +39,11 @@ class Setting(Enum):
 
     ROUND_NEAREST = auto()
     ROUND_WORST_CASE = auto()
+
+    MODE_BACKTEST = auto()
+    MODE_LIVE = auto()
+    MODE_TEST = auto()
+    MODE_NONE = auto()  
     
 
 class Strategy:
@@ -48,7 +55,8 @@ class Strategy:
         self.setting_slippage_sl       = Setting.SLIP_OFF
         self.setting_slippage_tp       = Setting.SLIP_OFF
         self.setting_rounding_method   = Setting.ROUND_WORST_CASE
-        self.setting_track_all_metrics = False                      
+        self.setting_track_all_metrics = False
+        self.setting_listen_time       = None
 
         # ---- panda dataframes ----
         self.df = None                      # main dataframe (candles/indiciators)
@@ -175,6 +183,22 @@ class Strategy:
         self._setting_rm_sell     = Setting.FLOOR if self.setting_rounding_method == Setting.ROUND_WORST_CASE else Setting.ROUND
         self._setting_rm_sell_sl  = Setting.CEIL if self.setting_rounding_method == Setting.ROUND_WORST_CASE else Setting.ROUND
         self._setting_rm_sell_tp  = Setting.CEIL if self.setting_rounding_method == Setting.ROUND_WORST_CASE else Setting.ROUND
+
+        # ----- Other parameters for runners -----
+        self.TEST_MODE = Setting.MODE_NONE
+        
+        self.TIME_INTERVAL = None
+        self.TIME_INTERVAL_STR = "Unknown"
+        self.TIME_START = None
+        self.TIME_END = None
+        self.TIME_ELAPSED = None
+        self.TIME_WORK_DAYS = None
+
+        self.POLL_INTERVAL = None
+        self.CANDLE_BUFFER = None
+        self.DEVIATION = None
+
+        self.STRATEGY_NAME = self.__class__.__name__
 
     # ====== INHERIT AND OVERRIDE THESE METHODS ======
     def buy_condition(self, i):
@@ -605,6 +629,198 @@ class Strategy:
                 self.l_orders_closed.append(order_tp)
                 continue
 
+    
+    # ====== Display functions ======
+
+    def discord_stats(self):
+        """Shows currents stats"""
+        
+        title = "⚖️ Strategy Metrics"
+
+        if self.TEST_MODE == Setting.MODE_TEST:
+            mode = "🟡 TEST"
+            color = "#E5FF00"
+            self.TIME_END = datetime.now(ZoneInfo("Europe/London"))
+            self.TIME_ELAPSED = self.TIME_END - self.TIME_START
+            self.TIME_WORK_DAYS = np.busday_count(self.TIME_START.date(),self.TIME_END.date())
+            
+
+        elif self.TEST_MODE == Setting.MODE_LIVE:
+            mode = "🟢 LIVE"
+            color = "#16c60c"
+            self.TIME_END = datetime.now(ZoneInfo("Europe/London"))
+            self.TIME_ELAPSED = self.TIME_END - self.TIME_START
+            self.TIME_WORK_DAYS = np.busday_count(self.TIME_START.date(),self.TIME_END.date())
+
+        elif self.TEST_MODE == Setting.MODE_BACKTEST:
+            mode = "🟣 BACKTEST"
+            color = "#886ce4"
+        else:
+            mode = "⚫ NONE"
+            color = "#2e2e2e"
+
+        start_time_str = self.TIME_START.strftime("%d/%m/%y %H:%M %Z") if self.TIME_START is not None else "Unknown"
+        end_time_str = self.TIME_END.strftime("%d/%m/%y %H:%M %Z") if self.TIME_END is not None else "Unknown"
+        time_elapsed_str = str(self.TIME_ELAPSED).split('.')[0] if self.TIME_ELAPSED is not None else "Unknown"
+        time_elapsed_work_days_str = f"{self.TIME_WORK_DAYS} work days" if self.TIME_WORK_DAYS is not None else "Unknown"
+
+        column1 = (
+            f"Mode: `{mode}`\n"
+            f"Strategy: `{self.STRATEGY_NAME}`\n"
+            f"Interval: `{self.TIME_INTERVAL_STR}`\n"
+            f"Start time `{start_time_str}`\n"
+            f"End time `{end_time_str}`\n"
+            f"Elapsed time `{time_elapsed_str}`\n"
+            f"work days `{time_elapsed_work_days_str}`\n"
+            f"Open Trades: `{self.OPEN_TRADES}`\n"
+            f"Total Trades: `{self.TOTAL_TRADES}`\n"
+            f"Total Longs: `{self.TOTAL_LONGS}`\n"
+            f"Total Shorts: `{self.TOTAL_SHORTS}`\n"
+            f"Average Profit: `{self.AVERAGE_PROFIT:.2f} {self.TICK_CURRENCY}`\n"
+            f"Average Loss: `{self.AVERAGE_LOSS:.2f} {self.TICK_CURRENCY}`\n"
+            f"Average Return: `{self.AVERAGE_RETURN*100:.2f}%`\n"
+            
+
+        )
+
+        column2 = (
+            
+            f"Win Rate: `{self.TOTAL_WIN_RATE*100:.2f}%`\n"
+            f"Win Rate Long: `{self.TOTAL_WIN_RATE_LONG*100:.2f}%`\n"
+            f"Win Rate Short: `{self.TOTAL_WIN_RATE_SHORT*100:.2f}%`\n"
+            f"Total PnL: `{self.TOTAL_PNL:.2f} {self.TICK_CURRENCY}`\n"
+            f"Margin: `{self.TOTAL_MARGIN:.2f} {self.TICK_CURRENCY}`\n"
+            f"Total Return: `{self.TOTAL_RETURN*100:.2f}%`\n"
+            f"Profit Factor: `{self.TOTAL_PROFIT_FACTOR:.2f}`\n"
+            f"Max Drawdown: `{self.TOTAL_MAX_DRAWDOWN:.2f} {self.TICK_CURRENCY}`\n"
+            f"Payoff Ratio: `{self.TOTAL_PAYOFF_RATIO:.2f}`\n"
+            f"Sharpe (Annual): `{self.TOTAL_SHARPE_RATIO_ANNUAL:.2f}`\n"
+            f"Sharpe (Daily): `{self.TOTAL_SHARPE_RATIO_DAILY:.2f}`\n"
+            f"Sortino (Annual): `{self.TOTAL_SORTINO_RATIO_ANNUAL:.2f}`\n"
+            f"Sortino (Daily): `{self.TOTAL_SORTINO_RATIO_DAILY:.2f}`\n"
+            f"PnL/MDD Ratio: `{self.TOTAL_PNL_MDD_RATIO:.2f}`\n"
+        )
+
+        # ---- ADD PNL CHART ----
+        buf = basic_graph(
+                                np.arange(len(self.l_CUMSUM_PNL)),
+                                self.l_CUMSUM_PNL,
+                                xlabel="Trades",
+                                ylabel="Pnl",
+                                color=color,
+                                discord =True
+                            )
+        
+        embed = [{'value': column1, 'type': "text", 'inline': True, "title": ""}, 
+                 {'value': column2, 'type': "text", 'inline': True, "title": ""},
+                 {'value': buf,     'type': "file", 'inline': True, "title": ""}]
+
+        return [embed, color, title]
+          
+    def discord_market(self):
+
+        title = "💵 Market Info"
+        color = "#0066FF"
+
+        top_row = (f"Name: `{self.MARKET_NAME}`\n")
+
+        column1 = (
+
+                f"Symbol: `{self.MARKET_SYMBOL} `\n"
+                f"Type: `{self.MARKET_TYPE}`\n"
+                f"Candle Buffer: `{self.CANDLE_BUFFER}`\n"
+                f"Poll Interval: `{self.POLL_INTERVAL}`\n"
+                f"Time Frame: `{self.TIME_INTERVAL_STR}`\n"
+                f"Tick Currency: `{self.TICK_CURRENCY}`\n"
+                f"Tick Size: `{self.TICK_SIZE:.3f}`\n"
+                f"Tick Price: `{self.TICK_PRICE:.3f} {self.TICK_CURRENCY}`\n"
+                f"Tick Spread: `{self.TICK_SPREAD:.2f}`\n"
+                f"Tick Slippage: `{self.TICK_SLIPPAGE:.2f}`\n"
+
+            )
+    
+        column2 = (
+                    f"Point Slippage: `{self.POINT_SLIPPAGE:.2f}`\n"
+                    f"Point Leverage: `{self.POINT_LEVERAGE:.2f}`\n"
+                    f"Lot Currency: `{self.LOT_CURRENCY}`\n"
+                    f"Lot min size: `{self.LOT_MIN_SIZE:.2f}`\n"
+                    f"Lot increment: `{self.LOT_INCREMENT:.2f}`\n"
+                    f"Fee Type: `{self.FEE_TYPE}`\n"
+                    f"Fee: `{self.FEE:.2f} {self.TICK_CURRENCY}`\n"
+                    f"Starting Margin: `{self.START_MARGIN:.2f} {self.TICK_CURRENCY}`\n"
+                    f"Active Margin: `{self.TOTAL_MARGIN:.2f} {self.TICK_CURRENCY}`\n"
+            )
+
+        embed = [{'value': top_row, 'type': "text", 'inline': False, "title": ""}, 
+                 {'value': column1, 'type': "text", 'inline': True, "title": ""},
+                 {'value': column2, 'type': "text", 'inline': True, "title": ""}]
+
+        return [embed, color, title]
+
+    def discord_settings(self):
+
+        title = "⚙️ Strategy Settings"
+
+        if self.TEST_MODE == Setting.MODE_TEST:
+            mode = "🟡"
+            color = "#E5FF00"
+            
+        elif self.TEST_MODE == Setting.MODE_LIVE:
+            mode = "🟢"
+            color = "#16c60c"
+
+        elif self.TEST_MODE == Setting.MODE_BACKTEST:
+            mode = "🟣"
+            color = "#886ce4"
+        else:
+            mode = "⚫"
+            color = "#2e2e2e"
+
+        inputs = ""
+        for key, value in self.INPUT_PARAMS.items():
+            inputs += f"{key}: `{value}`\n"
+
+        settings = (
+                    f"Test Mode: `{mode}{self.TEST_MODE}`\n"
+                    f"Slippage Entry Mode: `{self.setting_slippage_entry}`\n"
+                    f"Slippage SL Mode: `{self.setting_slippage_sl}`\n"
+                    f"Slippage TP Mode: `{self.setting_slippage_tp}`\n"
+                    f"Price Round Mode: `{self.setting_rounding_method}`\n"
+                    f"Track all metrics history: `{self.setting_track_all_metrics}`\n"
+                    
+                )
+        
+        derived_settings = (
+                    f"Rounding Mode: buy: `{self._setting_rm_buy}`\n"
+                    f"Rounding Mode: buy|sl: `{self._setting_rm_buy_sl}`\n"
+                    f"Rounding Mode: buy|tp: `{self._setting_rm_buy_tp}`\n"
+                    f"Rounding Mode: sell: `{self._setting_rm_sell}`\n"
+                    f"Rounding Mode: sell|sl: `{self._setting_rm_sell_sl}`\n"
+                    f"Rounding Mode: sell|tp: `{self._setting_rm_sell_tp}`\n"
+                    f"Candle buffer: `{self.CANDLE_BUFFER} candles`\n"
+                    f"console listen time: `{self.setting_listen_time}s`\n"
+                    f"Data poll interval: `{self.POLL_INTERVAL}s`\n"
+                )
+        
+        embed = [ {'value': inputs, 'type': "text", 'inline': False, "title": "Modified Variables"},
+                  {'value': settings, 'type': "text", 'inline': False, "title": "Settings"},
+                  {'value': derived_settings, 'type': "text", 'inline': False, "title": "Hidden Settings"}]
+
+        return [embed, color, title]
+
+    def discord_inputs(self):
+
+        title = "🕹️ Initial Inputs"
+        color = "#C50D0D"
+
+        inputs = ""
+        for key, value in self.INPUT_PARAMS.items():
+            inputs += f"{key}: `{value}`\n"
+
+        embed = [ {'value': inputs, 'type': "text", 'inline': False, "title": ""}]
+
+        return [embed, color, title]
+    
     # ====== INTERNAL FUNCTIONS ======
     @final
     def _fee(self, qty, price):
