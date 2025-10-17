@@ -15,7 +15,7 @@ import talib.abstract as ta
 from typing import final
 import discord
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import numpy as np
 
@@ -23,13 +23,13 @@ import numpy as np
 try: 
     from .logger import log, stamp, pront
     from .utils import timedelta_to_str, print_boxed_title
-    from .data import load_symbol, load_json, get_symbol_list, _load_data, _write_data
+    from .data import read_symbol, _load_data, _write_data, tz_from_utx_offset, write_symbol
     from .baseStrategy import Strategy, Setting
 except ImportError: 
     #for running as main script
     from logger import log, stamp, pront
     from utils import timedelta_to_str, print_boxed_title
-    from data import load_symbol, load_json, get_symbol_list, _load_data, _write_data
+    from data import _load_data, _write_data, tz_from_utx_offset, write_symbol, read_symbol
     from baseStrategy import Strategy, Setting
 
 
@@ -87,28 +87,44 @@ def mt5_ensure_login():
         return 0
     return 1
 
-def mt5_symbol_info(symbol: str):
+def mt5_load_symbol(symbol: str, read=False, write=False):
     
     # ----- ENSURE LOGIN -----
     if not mt5_ensure_login():
         log.error("❌ MT5 is not initialized. Please call login_mt5() first.")
         return None
     
-    # ----- READ IF ALREADY DOWLOADED -----
-    symbol_info = load_symbol(symbol)
-    if symbol_info is not None:
-        stamp.success(f"✅ {symbol} info retreived from data_symbols.json")
-        return symbol_info
-
-    # ----- OTHERWISE DOWNLOAD AND SAVE -----
+    # ----- WE WANT TO READ -----
+    
+    if read:
+        symbol_info = read_symbol(symbol)
+        if symbol_info:
+            stamp.success(f"✅ {symbol} info retreived from data_symbols.json")
+            return symbol_info
+        else:
+            stamp.warning(f"🚧 {symbol} cannot be read from data_symbols.json, fetching now...")
+    
+    
+    # ----- FETCH DATA -----
     try:
         info = mt5.symbol_info(symbol)
+        terminal_info = mt5.terminal_info()
     except Exception as e:
         log.error(f"❌ Error getting symbol info for {symbol}: {e}")
         return None
+    
+    # ----- infer timezone  -----
+    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1) # get 1 candle
+    server_time = pd.to_datetime(rates[0]['time'], unit='s')
+    utc_now = datetime.now(timezone.utc)
+    offset = -int(round((utc_now.replace(tzinfo=None) - server_time).total_seconds() / 3600))
+    tz_name, tz_utc_offset  = tz_from_utx_offset(offset)
 
     symbol_info =  {
                     "symbol": info.name,
+                    "data_tz": tz_name,
+                    "data_tz_utc": tz_utc_offset,
+                    "server": terminal_info.name,
                     "name": info.description,
                     "type": "CFD" if info.trade_calc_mode == 4 else "unknown",
                     "tick_currency": info.currency_profit,
@@ -123,26 +139,29 @@ def mt5_symbol_info(symbol: str):
                     "fee_value": 0,                      # FTMO CFDs usually spread only
                 } 
     
-    json_path = os.path.join(os.path.dirname(__file__), "..", "data_symbols", "data_symbols.json")
-    data = load_json(json_path)
-    with open(json_path, "w") as f:
-        data[symbol] = symbol_info
-        json.dump(data, f, indent=4)
-
-    stamp.success(f"✅ {symbol} info successfully downloaded MT5 to data_symbols.json")
+    # IF WE WANT TO WRITE
+    if write:
+        write_success = write_symbol(symbol_info)
+        if write_success:
+            stamp.success(f"✅ {symbol} info successfully wrote to data_symbols.json")
+        else:
+            stamp.warning(f"🚧 {symbol} cannot be wrote to from data_symbols.json")
 
     return symbol_info
 
-def mt5_hdata(symbol: str, mt5_time_interval, candle_lookback: int = 1000, candle_offset: int = 0) -> pd.DataFrame:
+
+
+def mt5_hdata(symbol: str, mt5_time_interval, candle_lookback: int = 1000, candle_offset: int = 0, download_data=True) -> pd.DataFrame:
 
     
     # ----- CHECK IF FILE EXISTS -----
-    interval_str = MT5_TIMEFRAMES.get(mt5_time_interval, "unknown")
-    filename = f"mt5_{symbol}_{candle_lookback}c_{candle_offset}o_{interval_str}.csv".replace("-", "").replace("/", "-")
-    df = _load_data(filename) 
-    if df is not None:
-        stamp.success(f"✅ Data loaded from data/{filename} Opening now queen.")
-        return df
+    if download_data == True:
+        interval_str = MT5_TIMEFRAMES.get(mt5_time_interval, "unknown")
+        filename = f"mt5_{symbol}_{candle_lookback}c_{candle_offset}o_{interval_str}.csv".replace("-", "").replace("/", "-")
+        df = _load_data(filename) 
+        if df is not None:
+            stamp.success(f"✅ Data loaded from data/{filename} Opening now queen.")
+            return df
 
     # ----- IF NOT RETREIVE DATA -----
     try:
@@ -153,21 +172,30 @@ def mt5_hdata(symbol: str, mt5_time_interval, candle_lookback: int = 1000, candl
         return pd.DataFrame()
 
     # ----- FORMAT DATA -----
-    df = _mt5_format_data(rates)
+    symbol_data_tz_local = mt5_load_symbol(symbol,True,False)["data_tz"]
+    df = _mt5_format_data(rates, symbol_data_tz_local)
 
     # ----- WRITE DATA -----
-    _write_data(df,filename)
-    stamp.success(f"✅ {symbol} saved to data/{filename}. tz: {df.index.tz} {df.index[0].strftime("%d/%m/%y")} to {df.index[-1].strftime("%d/%m/%y")}, {mt5_time_interval} intervals, {candle_lookback} candles ")
+    if download_data == True:
+        _write_data(df,filename)
+        stamp.success(f"✅ {symbol} saved to data/{filename}. tz: {df.index.tz} {df.index[0].strftime("%d/%m/%y")} to {df.index[-1].strftime("%d/%m/%y")}, {mt5_time_interval} intervals, {candle_lookback} candles ")
 
     return df 
 
-def _mt5_format_data(mt5_rates) -> pd.DataFrame:
+def mt5_server_info(name = 'name'):
     
+    terminal_info = mt5.terminal_info()
+    return terminal_info[name]
+
+def _mt5_format_data(mt5_rates, tz_local) -> pd.DataFrame:
+    
+    # mt5_rates come in as numpy.ndarray with no timezone
+    # THIS IS FINE, BACKTESTERS _UPDATE_DATA_ARRAYS will format data
     df = pd.DataFrame(mt5_rates)
     df['time'] = pd.to_datetime(df['time'], unit='s')
     df.rename(columns={"time": "datetime", "tick_volume": "volume"}, inplace=True)
     df.set_index('datetime', inplace=True)
-    df = df.tz_localize('UTC')
+    df.index = df.index.tz_localize(tz_local)
 
     return df
 
@@ -189,6 +217,11 @@ class _mt5Strategy():
 
         # any market params you want (store them here; use in wrappers as needed)
         self.s.symbol_data        = symbol_info.copy()
+        
+        self.s.DATA_TZ            = symbol_info.get('data_tz', 'Unknown')
+        self.s.DATA_TZ_UTC        = symbol_info.get('data_tz_utc', 'Unknown')
+        self.s.DATA_SERVER        = symbol_info.get('server', 'Unknown')
+        
         self.s.MARKET_SYMBOL      = symbol_info.get('symbol', 'Unknown Symbol')
         self.s.MARKET_NAME        = symbol_info.get('name', 'Unknown Market')
         self.s.MARKET_TYPE        = symbol_info.get('type', 'futures')           # spot or futures
@@ -226,8 +259,6 @@ class _mt5Strategy():
         #log.debug("BacktesterStrategy wrapper instance created, strategy updated and wrapper methods added")
         pass
 
-    
-
     @final
     def sell_bracket(self, i, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
         
@@ -248,7 +279,7 @@ class _mt5Strategy():
         self.sell_bracket_original(i, qty, sl_price, tp_price, sl_pips, tp_pips, comments)
         
         # ------- Send the MT5 market order -------
-        if self.s.TEST_MODE is Setting.MODE_TEST:
+        if self.s.setting_strategy_mode is Setting.MODE_TEST:
             stamp.success(f"🔽🧪[TEST MODE]: SELL (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
             return
         else:
@@ -298,7 +329,7 @@ class _mt5Strategy():
         
 
         # ------- Send the MT5 market order -------
-        if self.s.TEST_MODE is Setting.MODE_TEST:
+        if self.s.setting_strategy_mode is Setting.MODE_TEST:
             stamp.success(f"🔼🧪[TEST MODE]: BUY (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
             return
         else:
@@ -366,10 +397,10 @@ class MT5_live(Strategy):
 
         self.wrapper = _mt5Strategy(strategy_instance, 
                                     df=pd.DataFrame(), 
-                                    symbol_info=mt5_symbol_info(symbol_str)  
+                                    symbol_info=mt5_load_symbol(symbol_str)  
                                     )
         
-        self.wrapper.s.TEST_MODE = Setting.MODE_TEST if test_mode else Setting.MODE_LIVE
+        self.wrapper.s.setting_strategy_mode = Setting.MODE_TEST if test_mode else Setting.MODE_LIVE
         self.wrapper.s.TIME_INTERVAL = timeframe 
         self.wrapper.s.TIME_INTERVAL_STR = MT5_TIMEFRAMES.get(self.wrapper.s.TIME_INTERVAL, "unknown")
         self.wrapper.s.CANDLE_BUFFER = candle_buffer
@@ -398,7 +429,7 @@ class MT5_live(Strategy):
             return pd.DataFrame()
 
         # ----- FORMAT DATA -----
-        df= _mt5_format_data(rates)
+        df= _mt5_format_data(rates, self.wrapper.s.DATA_TZ)
 
         return df
 
@@ -506,7 +537,8 @@ class MT5_live(Strategy):
 if __name__ == "__main__":
 
 
+    mt5_login()
+    symbol = mt5_load_symbol("US100.cash", read=True, write=True)
+    print(symbol)
 
-    bot1 = MT5_live("US100.cash", timeframe=mt5.TIMEFRAME_M1, candle_buffer=500, test_mode=True, poll_interval=1)
-
-    bot1.mt5_stream()
+   

@@ -10,19 +10,20 @@ import math
 from enum import Enum, auto
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+import pytz
 
 from typing import final
 
 try:
-    from .indicators import vwap, timeband, sessions
+    from .indicators import vwap, sessions
     from .logger import log, stamp, pront
-    from .data import load_yfinance
+    from .data import yfin_load_data
     from .utils import max_drawdown, sharpe, sortino, timedelta_to_str, print_boxed_title
     from .visuals import plot_trades, basic_graph
 except ImportError:
-    from indicators import vwap, timeband, sessions
+    from indicators import vwap, sessions
     from logger import log, stamp, pront
-    from data import load_yfinance
+    from data import yfin_load_data
     from utils import max_drawdown, sharpe, sortino, timedelta_to_str, print_boxed_title
     from visuals import plot_trades, basic_graph
     
@@ -56,7 +57,13 @@ class Strategy:
         self.setting_slippage_tp       = Setting.SLIP_OFF
         self.setting_rounding_method   = Setting.ROUND_WORST_CASE
         self.setting_track_all_metrics = False
+        self.setting_plot_rows         = 2
+        self.setting_timezone          = "Europe/London"
+        self.setting_plot_tradeid      = False
+        self.setting_plot_brackets     = False
         self.setting_listen_time       = None
+        self.setting_strategy_mode     = Setting.MODE_NONE
+
 
         # ---- panda dataframes ----
         self.df = None                      # main dataframe (candles/indiciators)
@@ -75,7 +82,14 @@ class Strategy:
         
         # ---- Market info (static) ----
         self.symbol_data = {} 
+        
+        
         self.START_MARGIN = 10000.0     # starting margin (KWARGS UPDATED)
+        
+        self.DATA_TZ = None
+        self.DATA_TZ_UTC = None
+        self.DATA_SERVER = None
+        
         self.MARKET_SYMBOL = None   
         self.MARKET_NAME = None       
         self.MARKET_TYPE = None           # spot or futures
@@ -185,7 +199,6 @@ class Strategy:
         self._setting_rm_sell_tp  = Setting.CEIL if self.setting_rounding_method == Setting.ROUND_WORST_CASE else Setting.ROUND
 
         # ----- Other parameters for runners -----
-        self.TEST_MODE = Setting.MODE_NONE
         
         self.TIME_INTERVAL = None
         self.TIME_INTERVAL_STR = "Unknown"
@@ -201,6 +214,15 @@ class Strategy:
         self.STRATEGY_NAME = self.__class__.__name__
 
     # ====== INHERIT AND OVERRIDE THESE METHODS ======
+
+    def update_data(self):
+        """ add needed df updates here, e.g. indicators """
+        return
+    
+    def plots(self):
+        """ Put all custom plot data in here"""
+        return
+
     def buy_condition(self, i):
         """ Condition to execute buy_action, return True/False """
         return 0
@@ -217,9 +239,6 @@ class Strategy:
         """ Logic to execute when sell_condition is true """
         return
 
-    def update_data(self):
-        """ add needed df updates here, e.g. indicators """
-        return
     
     def loop_update(self, i):
         """ updates to be made each loop (data received) """
@@ -233,7 +252,14 @@ class Strategy:
     # ====== FUNCTIONS ======
     
     def _update_data_arrays(self):
+        
+        # localise data correctly and convert
+        self.df.index = self.df.index.tz_convert(self.setting_timezone)
+
+        # add all new df columns
         self.update_data()
+
+        # convert columns in indivisual lists for high speed iteration
         self.data = {col: self.df[col].to_numpy().copy() for col in self.df.columns}
         self.data['datetime'] = self.df.index.to_numpy().copy() # Copy allows overriding of values
         return
@@ -325,21 +351,22 @@ class Strategy:
         # calculate performance metrics
         return
 
-    def plots(self, rows=2, **kwargs):
-    
-        boxes=kwargs.get('boxes', False)
-        trade_id=kwargs.get('trade_id', False)
-
-        if rows < 2:
+    def _plots(self):
+        
+        if self.setting_plot_rows < 2:
             stamp.critical("Strategy.plots(): rows must be >=2")
             return
 
-        self.axs = fplt.create_plot(f"{self.MARKET_NAME}/{self.TIME_INTERVAL_STR} {self.df.index[0]} - {self.df.index[-1]}", rows=rows)
+        fplt.display_timezone = pytz.timezone(self.setting_timezone)
+        self.axs = fplt.create_plot(f"{self.MARKET_NAME}/{self.TIME_INTERVAL_STR} {self.df.index[0].strftime("%d/%m/%y %H:%M:%S")} - {self.df.index[-1].strftime("%d/%m/%y %H:%M:%S")} - {self.setting_timezone}" , rows=self.setting_plot_rows)
 
         # standard candles
         fplt.volume_ocv(self.df[['open', 'close', 'volume']], ax=self.axs[0].overlay())
         fplt.candlestick_ochl(self.df[['open', 'close', 'high', 'low']], ax=self.axs[0])
         
+        # our custom plots
+        self.plots()
+
         # PnL chart
         if self.TOTAL_TRADES <= 0:
             log.warning("🚩 No trades were executed. Cannot plot PnL chart.")
@@ -347,7 +374,7 @@ class Strategy:
         else:
             fplt.add_line((self.df.index[0], self.START_MARGIN), (self.df.index[-1], self.START_MARGIN), ax=self.axs[-1], color="#130000", style="--")
             fplt.plot(self.df_cum_margin, ax=self.axs[-1], color="#ff6a00", legend="cumulative Pnl")
-            plot_trades(tf=self.tf, cc=self.cc, timestep=self.TIME_INTERVAL, ax=self.axs[0], boxes=boxes, trade_id=trade_id)
+            plot_trades(tf=self.tf, cc=self.cc, timestep=self.TIME_INTERVAL, ax=self.axs[0], boxes=self.setting_plot_brackets, trade_id=self.setting_plot_tradeid)
 
     def sell_bracket(self, i, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
         
@@ -637,7 +664,7 @@ class Strategy:
         
         title = "⚖️ Strategy Metrics"
 
-        if self.TEST_MODE == Setting.MODE_TEST:
+        if self.setting_strategy_mode == Setting.MODE_TEST:
             mode = "🟡 TEST"
             color = "#E5FF00"
             self.TIME_END = datetime.now(ZoneInfo("Europe/London"))
@@ -645,14 +672,14 @@ class Strategy:
             self.TIME_WORK_DAYS = np.busday_count(self.TIME_START.date(),self.TIME_END.date())
             
 
-        elif self.TEST_MODE == Setting.MODE_LIVE:
+        elif self.setting_strategy_mode == Setting.MODE_LIVE:
             mode = "🟢 LIVE"
             color = "#16c60c"
             self.TIME_END = datetime.now(ZoneInfo("Europe/London"))
             self.TIME_ELAPSED = self.TIME_END - self.TIME_START
             self.TIME_WORK_DAYS = np.busday_count(self.TIME_START.date(),self.TIME_END.date())
 
-        elif self.TEST_MODE == Setting.MODE_BACKTEST:
+        elif self.setting_strategy_mode == Setting.MODE_BACKTEST:
             mode = "🟣 BACKTEST"
             color = "#886ce4"
         else:
@@ -722,11 +749,15 @@ class Strategy:
         title = "💵 Market Info"
         color = "#0066FF"
 
-        top_row = (f"Name: `{self.MARKET_NAME}`\n")
+        top_row = (f"Name: `{self.MARKET_NAME}`\n"
+                   f"Symbol: `{self.MARKET_SYMBOL}`\n"
+                   f"Interval: `{self.TIME_INTERVAL_STR}`\n"
+                   f"Timezone: `{self.df.index.tz}`\n"
+                   f"Server Timezone: `{self.DATA_TZ} / {self.DATA_TZ_UTC}`\n"
+                   f"Data Server: `{self.DATA_SERVER}`\n")
 
         column1 = (
 
-                f"Symbol: `{self.MARKET_SYMBOL} `\n"
                 f"Type: `{self.MARKET_TYPE}`\n"
                 f"Candle Buffer: `{self.CANDLE_BUFFER}`\n"
                 f"Poll Interval: `{self.POLL_INTERVAL}`\n"
@@ -738,10 +769,10 @@ class Strategy:
                 f"Tick Slippage: `{self.TICK_SLIPPAGE:.2f}`\n"
 
             )
-    
+     
         column2 = (
                     f"Point Slippage: `{self.POINT_SLIPPAGE:.2f}`\n"
-                    f"Point Leverage: `{self.POINT_LEVERAGE:.2f}`\n"
+                    f"Point Price: `{self.POINT_LEVERAGE:.2f} {self.TICK_CURRENCY}`\n"
                     f"Lot Currency: `{self.LOT_CURRENCY}`\n"
                     f"Lot min size: `{self.LOT_MIN_SIZE:.2f}`\n"
                     f"Lot increment: `{self.LOT_INCREMENT:.2f}`\n"
@@ -761,15 +792,15 @@ class Strategy:
 
         title = "⚙️ Strategy Settings"
 
-        if self.TEST_MODE == Setting.MODE_TEST:
+        if self.setting_strategy_mode == Setting.MODE_TEST:
             mode = "🟡"
             color = "#E5FF00"
             
-        elif self.TEST_MODE == Setting.MODE_LIVE:
+        elif self.setting_strategy_mode == Setting.MODE_LIVE:
             mode = "🟢"
             color = "#16c60c"
 
-        elif self.TEST_MODE == Setting.MODE_BACKTEST:
+        elif self.setting_strategy_mode == Setting.MODE_BACKTEST:
             mode = "🟣"
             color = "#886ce4"
         else:
@@ -781,28 +812,31 @@ class Strategy:
             inputs += f"{key}: `{value}`\n"
 
         settings = (
-                    f"Test Mode: `{mode}{self.TEST_MODE}`\n"
+                    f"Test Mode: `{mode}{self.setting_strategy_mode}`\n"
                     f"Slippage Entry Mode: `{self.setting_slippage_entry}`\n"
                     f"Slippage SL Mode: `{self.setting_slippage_sl}`\n"
                     f"Slippage TP Mode: `{self.setting_slippage_tp}`\n"
                     f"Price Round Mode: `{self.setting_rounding_method}`\n"
                     f"Track all metrics history: `{self.setting_track_all_metrics}`\n"
-                    
+                    f"Plot brackets: `{self.setting_plot_brackets}`\n"
+                    f"Plot trade id: `{self.setting_plot_tradeid}`\n"
+                    f"Plot rows: `{self.setting_plot_rows}`\n"
+                    f"Timezone: `{self.setting_timezone}`\n"
                 )
         
         derived_settings = (
                     f"Rounding Mode: buy: `{self._setting_rm_buy}`\n"
-                    f"Rounding Mode: buy|sl: `{self._setting_rm_buy_sl}`\n"
-                    f"Rounding Mode: buy|tp: `{self._setting_rm_buy_tp}`\n"
+                    f"Rounding Mode: buy_sl: `{self._setting_rm_buy_sl}`\n"
+                    f"Rounding Mode: buy_tp: `{self._setting_rm_buy_tp}`\n"
                     f"Rounding Mode: sell: `{self._setting_rm_sell}`\n"
-                    f"Rounding Mode: sell|sl: `{self._setting_rm_sell_sl}`\n"
-                    f"Rounding Mode: sell|tp: `{self._setting_rm_sell_tp}`\n"
-                    f"Candle buffer: `{self.CANDLE_BUFFER} candles`\n"
-                    f"console listen time: `{self.setting_listen_time}s`\n"
-                    f"Data poll interval: `{self.POLL_INTERVAL}s`\n"
+                    f"Rounding Mode: sell_sl: `{self._setting_rm_sell_sl}`\n"
+                    f"Rounding Mode: sell_tp: `{self._setting_rm_sell_tp}`\n"
+                    f"Candle buffer: `{self.CANDLE_BUFFER}`\n"
+                    f"console listen time(s): `{self.setting_listen_time}`\n"
+                    f"Data poll interval(s): `{self.POLL_INTERVAL}`\n"
                 )
         
-        embed = [ {'value': inputs, 'type': "text", 'inline': False, "title": "Modified Variables"},
+        embed = [ {'value': inputs, 'type': "text", 'inline': False, "title": f"{self.STRATEGY_NAME} | Modified Variables"},
                   {'value': settings, 'type': "text", 'inline': False, "title": "Settings"},
                   {'value': derived_settings, 'type': "text", 'inline': False, "title": "Hidden Settings"}]
 
@@ -821,6 +855,84 @@ class Strategy:
 
         return [embed, color, title]
     
+    def discord_summary(self):
+
+        title = "📝 Strategy Summary"
+
+        if self.setting_strategy_mode == Setting.MODE_TEST:
+            mode = "🟡 TEST"
+            color = "#E5FF00"
+            self.TIME_END = datetime.now(ZoneInfo("Europe/London"))
+            self.TIME_ELAPSED = self.TIME_END - self.TIME_START
+            self.TIME_WORK_DAYS = np.busday_count(self.TIME_START.date(),self.TIME_END.date())
+
+        elif self.setting_strategy_mode == Setting.MODE_LIVE:
+            mode = "🟢 LIVE"
+            color = "#16c60c"
+            self.TIME_END = datetime.now(ZoneInfo("Europe/London"))
+            self.TIME_ELAPSED = self.TIME_END - self.TIME_START
+            self.TIME_WORK_DAYS = np.busday_count(self.TIME_START.date(),self.TIME_END.date())
+
+        elif self.setting_strategy_mode == Setting.MODE_BACKTEST:
+            mode = "🟣 BACKTEST"
+            color = "#886ce4"
+        else:
+            mode = "⚫ NONE"
+            color = "#2e2e2e"
+
+        start_time_str = self.TIME_START.strftime("%d/%m/%y %H:%M %Z") if self.TIME_START is not None else "Unknown"
+        end_time_str = self.TIME_END.strftime("%d/%m/%y %H:%M %Z") if self.TIME_END is not None else "Unknown"
+        time_elapsed_str = str(self.TIME_ELAPSED).split('.')[0] if self.TIME_ELAPSED is not None else "Unknown"
+        time_elapsed_work_days_str = f"{self.TIME_WORK_DAYS} work days" if self.TIME_WORK_DAYS is not None else "Unknown"
+
+        column1 = (
+            f"Mode: `{mode}`\n"
+            f"Symbol: `{self.MARKET_SYMBOL}`\n"
+            f"Interval: `{self.TIME_INTERVAL_STR}`\n"
+            f"Start time `{start_time_str}`\n"
+            f"End time `{end_time_str}`\n"
+            f"Elapsed time `{time_elapsed_str}`\n"
+            f"work days `{time_elapsed_work_days_str}`\n"
+            f"Open Trades: `{self.OPEN_TRADES}`\n"
+            f"Total Trades: `{self.TOTAL_TRADES}`\n"
+            f"Total Longs: `{self.TOTAL_LONGS}`\n"
+            f"Total Shorts: `{self.TOTAL_SHORTS}`\n"
+            f"Average Profit: `{self.AVERAGE_PROFIT:.2f} {self.TICK_CURRENCY}`\n"
+            f"Average Loss: `{self.AVERAGE_LOSS:.2f} {self.TICK_CURRENCY}`\n"
+            f"Average Return: `{self.AVERAGE_RETURN*100:.2f}%`\n"
+            
+
+        )
+
+        column2 = (
+            
+            f"Win Rate: `{self.TOTAL_WIN_RATE*100:.2f}%`\n"
+            f"Win Rate Long: `{self.TOTAL_WIN_RATE_LONG*100:.2f}%`\n"
+            f"Win Rate Short: `{self.TOTAL_WIN_RATE_SHORT*100:.2f}%`\n"
+            f"Total PnL: `{self.TOTAL_PNL:.2f} {self.TICK_CURRENCY}`\n"
+            f"Margin: `{self.TOTAL_MARGIN:.2f} {self.TICK_CURRENCY}`\n"
+            f"Total Return: `{self.TOTAL_RETURN*100:.2f}%`\n"
+            f"Profit Factor: `{self.TOTAL_PROFIT_FACTOR:.2f}`\n"
+            f"Max Drawdown: `{self.TOTAL_MAX_DRAWDOWN:.2f} {self.TICK_CURRENCY}`\n"
+            f"Payoff Ratio: `{self.TOTAL_PAYOFF_RATIO:.2f}`\n"
+            f"Sharpe (Annual): `{self.TOTAL_SHARPE_RATIO_ANNUAL:.2f}`\n"
+            f"Sharpe (Daily): `{self.TOTAL_SHARPE_RATIO_DAILY:.2f}`\n"
+            f"Sortino (Annual): `{self.TOTAL_SORTINO_RATIO_ANNUAL:.2f}`\n"
+            f"Sortino (Daily): `{self.TOTAL_SORTINO_RATIO_DAILY:.2f}`\n"
+            f"PnL/MDD Ratio: `{self.TOTAL_PNL_MDD_RATIO:.2f}`\n"
+        )
+
+        inputs = ""
+        for key, value in self.INPUT_PARAMS.items():
+            inputs += f"{key}: `{value}`\n"
+
+        embed = [{'value': inputs, 'type': "text", 'inline': False, "title": f"🕹️ {self.STRATEGY_NAME} | Modified Variables"},
+                 {'value': column1, 'type': "text", 'inline': True, "title": "⚖️ Metrics and Performance"},
+                 {'value': column2, 'type': "text", 'inline': True, "title": "‎ "}
+                ]
+
+        return [embed, color, title]
+
     # ====== INTERNAL FUNCTIONS ======
     @final
     def _fee(self, qty, price):

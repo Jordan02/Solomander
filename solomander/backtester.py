@@ -10,16 +10,16 @@ import math
 from typing import final
 
 try:
-    from .indicators import vwap, timeband, sessions
+    from .indicators import vwap, sessions
     from .logger import log, stamp, pront
-    from .data import load_yfinance
+    from .data import yfin_load_data
     from .utils import max_drawdown, sharpe, sortino, timedelta_to_str, print_boxed_title
     from .visuals import plot_trades
     from .baseStrategy import Strategy, Setting 
 except ImportError:
-    from indicators import vwap, timeband, sessions
+    from indicators import vwap, sessions
     from logger import log, stamp, pront
-    from data import load_yfinance
+    from data import yfin_load_data
     from utils import max_drawdown, sharpe, sortino, timedelta_to_str, print_boxed_title
     from visuals import plot_trades
     from solomander.baseStrategy import Strategy, Setting
@@ -38,9 +38,9 @@ class _BacktesterStrategy:
         self.s._update_data_arrays()  # initial update of data arrays
 
         # New parameters fields
+        self.s.setting_strategy_mode = Setting.MODE_BACKTEST
         self.s.TIME_INTERVAL     = self.s.df.index.to_series().diff().dropna().min()
         self.s.TIME_INTERVAL_STR = timedelta_to_str(self.s.TIME_INTERVAL)
-        self.s.TEST_MODE = Setting.MODE_BACKTEST
         self.s.TIME_START = self.s.df.index[0]
         self.s.TIME_END = self.s.df.index[-1]
         self.s.TIME_ELAPSED = self.s.TIME_END - self.s.TIME_START
@@ -48,6 +48,11 @@ class _BacktesterStrategy:
 
         # any market params you want (store them here; use in wrappers as needed)
         self.s.symbol_data        = symbol_info.copy()
+        
+        self.s.DATA_TZ            = symbol_info.get('data_tz', 'Unknown')
+        self.s.DATA_TZ_UTC        = symbol_info.get('data_tz_utc', 'Unknown')
+        self.s.DATA_SERVER        = symbol_info.get('server', 'Unknown')
+
         self.s.MARKET_SYMBOL      = symbol_info.get('symbol', 'Unknown Symbol')
         self.s.MARKET_NAME        = symbol_info.get('name', 'Unknown Market')
         self.s.MARKET_TYPE        = symbol_info.get('type', 'futures')           # spot or futures
@@ -83,7 +88,7 @@ class _BacktesterStrategy:
     @final
     def sell_bracket(self, i, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
         
-        self.buy_bracket_orginal(i, qty, sl_price, tp_price, sl_pips, tp_pips, comments)
+        self.sell_bracket_orginal(i, qty, sl_price, tp_price, sl_pips, tp_pips, comments)
         #stamp.info(f"test, SELL backtest wrapper")
         return 
         
@@ -91,7 +96,7 @@ class _BacktesterStrategy:
     @final
     def buy_bracket(self, i, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
 
-        self.sell_bracket_orginal(i, qty, sl_price, tp_price, sl_pips, tp_pips, comments)
+        self.buy_bracket_orginal(i, qty, sl_price, tp_price, sl_pips, tp_pips, comments)
         #stamp.info(f"test, BUY backtest wrapper")
         return
 
@@ -210,7 +215,7 @@ class Backtester():
 
     @final
     def show(self, **kwargs):
-        self.wrapper.s.plots(**kwargs)
+        self.wrapper.s._plots(**kwargs)
         fplt.show()
         return
 

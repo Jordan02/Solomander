@@ -35,7 +35,7 @@ TEST_MODE = True
 pd.set_option("display.max_columns", None)
 
 s.mt5_login()
-ticker = s.mt5_symbol_info(SYMBOL)
+ticker = s.mt5_load_symbol(SYMBOL)
 df = s.mt5_hdata(SYMBOL, TIME_FRAME, candle_lookback=2000)
 
 
@@ -92,8 +92,8 @@ class strat1(Strategy):
 
     # ===== Visualization =====
 
-    def plots(self):
-        super().plots(rows=3)
+    def _plots(self):
+        super()._plots(rows=3)
 
         fplt.plot(self.df['SMA_slow'] , ax=self.axs[0], color="#ff6a00", legend=f"SMA {self.SMA_SLOW}")
         fplt.plot(self.df['SMA_fast'] , ax=self.axs[0], color="#00ff6a", legend=f"SMA {self.SMA_FAST}")

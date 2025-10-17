@@ -12,12 +12,12 @@ import io
 try:
 
     from .logger import log, stamp, pront
-    from .data import load_yfinance
+    from .data import yfin_load_data
     
 except ImportError:
     
     from logger import log, stamp, pront
-    from data import load_yfinance
+    from data import yfin_load_data
     
     
 
@@ -70,22 +70,47 @@ def plot_candles(start , ax):
     
     return
 
-def plot_timeblock(df, column, ax, color="#2448e960", title=""):
+def plot_timeblock(df, zone_col, ax, color="#2448e960", title=""):
+    """
+    Plot time zones (positive blocks) as rectangles on a finplot chart.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain 'high' and 'low' columns and a datetime index.
+    zone_col : str
+        Column name in df that contains zone IDs (positive/negative ints).
+    ax : finplot.FinplotWidget
+        Finplot axis handle.
+    color : str
+        RGBA hex color for the rectangles (default semi-transparent blue).
+    title : str
+        Optional label text placed at the start of each zone.
+    """
 
+    # Keep only positive (active) zones
+    df_zones = df[df[zone_col] > 0].copy()
 
+    # Group by zone ID (e.g. 1, 2, 3...)
+    for zone_id, group in df_zones.groupby(zone_col):
+        start = group.index[0]
+        end = group.index[-1]
+        low = group["low"].min()
+        high = group["high"].max()
 
-    df_sess = df.dropna(subset=[column])
-
-    for day, group in df_sess.groupby(df_sess.index.date):
-        fplt.add_rect((group.index[0], group['low'].min()), (group.index[-1], group['high'].max()), ax=ax, color=color)
-        fplt.add_text((group.index[0], group['low'].min()), title, color=color, ax=ax)
+        # Draw rectangle covering that timeblock
+        fplt.add_rect((start, low),(end, high),ax=ax,color=color,)
+        # Optionally label the start of each zone
+        if title:
+            fplt.add_text((start, low),f"{title} {zone_id}",color=color,ax=ax,)
+            
 
 def plot_timeband(df, column, ax, color="#bdbdbd40", title=""):
 
     df_band = df.dropna(subset=[column])
 
     for day, group in df_band.groupby(df_band.index.date):
-        fplt.add_vertical_band(group.index[0], group.index[-1], color=color)
+        fplt.add_vertical_band(group.index[0], group.index[-1], color=color, title=title)
 
 
 def basic_graph(x,y,color="#2ecc71",xlabel="X-axis",ylabel="Y-axis", discord=True):

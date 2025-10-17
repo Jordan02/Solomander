@@ -1,5 +1,26 @@
 {
+    "US100.cash": {
+        "symbol": "US100.cash",
+        "data_tz": "Europe/Moscow",
+        "data_tz_utc": "UTC+3",
+        "server": "FTMO Global Markets MT5 Terminal",
+        "name": "NASDAQ 100 Index, Spot CFD",
+        "type": "CFD",
+        "tick_currency": "USD",
+        "tick_size": 0.01,
+        "tick_price": 0.007454286587502143,
+        "tick_spread": 100,
+        "point_slippage": 0.5,
+        "lot_currency": "contracts",
+        "lot_increment": 0.01,
+        "lot_min_size": 0.01,
+        "fee_type": "fixed",
+        "fee_value": 0
+    },
     "BTC/USDT": {
+        "data_tz": "??",
+        "data_tz_utc": "??",
+        "server": "binance",
         "symbol": "BTC/USDT",
         "name": "BTC/USDT SPOT",
         "type": "crypto",
@@ -16,6 +37,9 @@
     },
     "MNQ=F": {
         "symbol": "MNQ=F",
+        "data_tz": "America/New_York",
+        "data_tz_utc": "UTC-4",
+        "server": "CME",
         "name": "MNQ",
         "type": "futures",
         "tick_currency": "USD",
@@ -28,20 +52,5 @@
         "lot_min_size": 1,
         "fee_type": "fixed",
         "fee_value": 0.87
-    },
-    "US100.cash": {
-        "symbol": "US100.cash",
-        "name": "NASDAQ 100 Index, Spot CFD",
-        "type": "CFD",
-        "tick_currency": "USD",
-        "tick_size": 0.01,
-        "tick_price": 0.0074168570326638384,
-        "tick_spread": 150,
-        "point_slippage": 0.5,
-        "lot_currency": "contracts",
-        "lot_increment": 0.01,
-        "lot_min_size": 0.01,
-        "fee_type": "fixed",
-        "fee_value": 0
     }
 }

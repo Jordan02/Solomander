@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import io
 import asyncio
+from tabulate import tabulate 
+from openpyxl import Workbook
 
 try: 
     from .logger import log, stamp, pront
@@ -271,8 +273,50 @@ class DiscordBot:
     
 
         return embed, files
-        
 
+    def post_data(self, df: pd.DataFrame, channel_id=None):
+
+        if channel_id is None:
+            channel_id = self.main_channel_id
+        channel = self.bot.get_channel(channel_id)
+        
+        data = df
+        
+        # Convert to CSV text
+        csv_buffer = io.StringIO()
+        data.to_csv(csv_buffer, index=True)
+        csv_buffer.seek(0)
+        
+        # Wrap in a Discord file object
+        file = discord.File(fp=io.StringIO(csv_buffer.getvalue()), filename="data.csv")
+
+        future = asyncio.run_coroutine_threadsafe(channel.send(file=file),self.bot.loop)
+        try:
+            future.result()
+            stamp.success("[Discord] ✅ Embed sent successfully!")
+        except Exception as e:
+            stamp.error(f"[Discord] ❌ Failed to send embed: {e}")
+
+        return
+
+    def post_data_table(self, df: pd.DataFrame, channel_id=None):
+
+        if channel_id is None:
+            channel_id = self.main_channel_id
+        channel = self.bot.get_channel(channel_id)
+        
+        data = df
+        table = tabulate(data, headers='keys', tablefmt='github', showindex=False)
+        message = f"```{table}```"
+
+        future = asyncio.run_coroutine_threadsafe(channel.send(message),self.bot.loop)
+        try:
+            future.result()
+            stamp.success("[Discord] ✅ Embed sent successfully!")
+        except Exception as e:
+            stamp.error(f"[Discord] ❌ Failed to send embed: {e}")
+
+        return
 
 if __name__ == "__main__":
     

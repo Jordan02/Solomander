@@ -4,6 +4,8 @@ import os
 import ccxt
 import time
 import json
+from zoneinfo import ZoneInfo
+from datetime import datetime
 
 try: 
     from .logger import log, stamp, pront
@@ -14,7 +16,7 @@ except ImportError:
     from utils import timedelta_to_str
 
 
-def load_yfinance(symbol: str, start :str = "2023-01-01", end: str= "2023-12-31", interval: str ="1d") -> pd.DataFrame:
+def yfin_load_data(symbol: str, start :str = "2023-11-01", end: str= "2023-12-31", interval: str ="1d", read=True, write=False) -> pd.DataFrame:
  
     """
     Download OHLCV data for a given ticker using yfinance.
@@ -28,25 +30,56 @@ def load_yfinance(symbol: str, start :str = "2023-01-01", end: str= "2023-12-31"
     Returns:
         pd.DataFrame: Always returns a DataFrame (empty if no data).
     """
-    # ----- CHECK IF THERE IS A VALID SYMBOL /META DATA FOR IT -----
-    if load_symbol(symbol) is None:
-        return pd.DataFrame()
-
-    # ----- CHECK IF FILE EXISTS -----
+    # ----- Read data -----
     filename = f"yfin_{symbol}_{start}_{end}_{interval}.csv".replace("-", "").replace("/", "-")
-    df = _load_data(filename) 
-    if df is not None:
-        stamp.success(f"✅ Data loaded from data/{filename} Opening now queen.")
-        return df
+    
+    if read:
+        df = _load_data(filename) 
+        if df is not None:
+            stamp.success(f"✅ {symbol} loaded from data folder. Opening now queen.")
+            return df
+        else:
+            stamp.warning(f"🚧 {symbol} data cannot be read from data folder, fetching now...")
 
-    # ----- DOWNLOAD IF NOT -----
+
+    # ----- load data -----
     try:
         df = yf.download(symbol, start=start, end=end, interval=interval)
+        symbol_info = yf.Ticker(symbol).info
+
     except Exception as e:
         log.error(f"❌ Error downloading from yfinance: {e}")
         return pd.DataFrame()
+    
+    # ----- Update symbol data -----
+    data_tz = symbol_info.get("exchangeTimezoneName")
+    data_tz_utc = tz_to_utc_offset(data_tz)
+    #print(data_tz) # data/timezone
+    # print(df.index.tz) # data has no timezone
 
-    # ----- FORMAT DATA -----
+    json_path = os.path.join(os.path.dirname(__file__), "..", "data_symbols", "data_symbols.json")
+    if os.path.exists(json_path) and os.path.getsize(json_path) > 0:
+        with open(json_path, "r", encoding="utf-8") as f:
+            all_data = json.load(f)
+    else:
+        all_data = {}
+
+    # Update or create symbol entry
+    if symbol not in all_data:
+        all_data[symbol] = {}
+
+    all_data[symbol]["symbol"] = symbol
+    all_data[symbol]["data_tz"] = data_tz
+    all_data[symbol]["data_tz_utc"] = data_tz_utc
+    all_data[symbol]["server"] = symbol_info["exchange"]
+    stamp.critical("You're Using yfinance for data - you NEED to MANAULLY update symbol info json")
+
+    # Save it back
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(all_data, f, indent=4, ensure_ascii=False)
+
+
+    # ----- format data -----
 
     df.index = pd.to_datetime(df.index) # convert index to datetime
     # remove second column name if it is a MultiIndex, and lowercase all column names
@@ -56,19 +89,25 @@ def load_yfinance(symbol: str, start :str = "2023-01-01", end: str= "2023-12-31"
     else:
         df.columns = df.columns.str.lower()
 
-    df = df.reindex(columns=["open", "close", "high", "low", "volume"]) #prefer OCHL order finplot
-
-    # rename index
+    df = df.reindex(columns=["open", "close", "high", "low", "volume"])
     df.columns.name = None
     df.reset_index(drop=True)
     df.index.name = "datetime"
-    
-    # ----- WRITE TO FILE -----
 
-    _write_data(df,filename)
-    stamp.success(f"✅ Data saved to data/{filename}. tz:{df.index.tz} {start} to {end} with {interval} interval")
+    if getattr(df.index, "tz", None) is None:
+        df.index = df.index.tz_localize(data_tz)
+    else:
+        df.index = df.index.tz_convert(data_tz)
+        
+    # ----- write data -----
+
+    if write:
+        _write_data(df,filename)
+        stamp.success(f"✅ Data saved to data/{filename}. tz:{df.index.tz} {start} to {end} with {interval} interval")
 
     return df
+
+
 
 def load_binance(symbol: str = "BTC/USDT", start: str = "2023-01-01", end: str = "2023-04-30", interval: str = "5m") -> pd.DataFrame:
     """
@@ -85,7 +124,7 @@ def load_binance(symbol: str = "BTC/USDT", start: str = "2023-01-01", end: str =
     """
 
      # ----- check there is valid symbol data available -----
-    if load_symbol(symbol) is None:
+    if read_symbol(symbol) is None:
         return pd.DataFrame()
 
     # ----- CHECK IF FILE EXISTS -----
@@ -129,15 +168,11 @@ def load_binance(symbol: str = "BTC/USDT", start: str = "2023-01-01", end: str =
 
     return df
 
+
+
+# ===== data loading ===== 
+
 def _write_data(df: pd.DataFrame, file_name: str):
-
-
-    if df.index.tz is None:
-        # Index is tz-naive, so localize
-        df.index = df.index.tz_localize("UTC")
-    else:
-        # Index is tz-aware, so convert
-        df.index = df.index.tz_convert("UTC")
 
     file_path = os.path.join(os.path.dirname(__file__), "..", "data", file_name)
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -153,59 +188,124 @@ def _load_data(file_name: str) -> pd.DataFrame:
     if os.path.exists(file_path):
         df = pd.read_csv(file_path, parse_dates=["datetime"], index_col="datetime")
         df.index = pd.to_datetime(df.index)
-        df.index = df.index.tz_convert("UTC")
         return df
     else:
         return None
 
-def load_symbol(symbol: str):
+
+# ===== symbol loading =====
+
+def read_symbol(symbol: str):
 
     '''
     returns symbol metadata if it exists in data_symbols.json
     else returns None
     '''
-
-    if not symbol in get_symbol_list():  
-        return None
-
     # file path
     json_path = os.path.join(os.path.dirname(__file__), "..", "data_symbols", "data_symbols.json")
-    symbols = load_json(json_path)
-    return symbols.get(symbol)
 
-def load_json(file_path: str):
-
-    if not os.path.exists(file_path):
-        log.error(f"File not found at {file_path}")
-        return None
     try:
-        with open(file_path, "r") as f:
-            data = json.load(f)
-            return data
+        with open(json_path, "r") as f:
+            all_data = json.load(f)
+            symbol_info = all_data.get(symbol)
+            return symbol_info
     except Exception as e:
-        log.error(f"Error decoding JSON from file at {file_path}: {e}")
+        log.error(f"Error decoding JSON from file at {json_path}: {e}")
         return None
 
-def add_symbol_to_json(data):
+def write_symbol(symbol_data):
 
+    '''
+    returns symbol metadata if it exists in data_symbols.json
+    else returns None
+    '''
+    # file directory
     json_path = os.path.join(os.path.dirname(__file__), "..", "data_symbols", "data_symbols.json")
-    symbols = load_json(json_path)
+    os.makedirs(os.path.dirname(json_path), exist_ok=True)
 
-    return
+    # make sure file has contents, open to read
+    if os.path.exists(json_path) and os.path.getsize(json_path) > 0:
+        with open(json_path, "r", encoding="utf-8") as f:
+            all_data = json.load(f)
+    else:
+        all_data = {}
 
-def get_symbol_list():
-    json_path = os.path.join(os.path.dirname(__file__), "..", "data_symbols", "data_symbols.json")
-    symbols = load_json(json_path)
-    return list(symbols.keys())
+    # add or update data
+    symbol_key = symbol_data.get("symbol", "unkown")
+    all_data[symbol_key] = symbol_data
+
+    # overwrite the whole file with updated dict
+    try:
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(all_data, f, indent=4, ensure_ascii=False)
+            return True
+    except Exception as e:
+        log.error(f"Error writting symbol data: {e}")
+        return False
+
+# ===== other ======
+
+def tz_from_utx_offset(offset_hours: int | float) -> str:
+
+    """
+    Convert a numeric UTC offset (e.g. -3, +2) into a named timezone string.
+    Falls back to an Etc/GMT zone if unknown.
+    """
+
+    offset_map = {
+        -12: "Etc/GMT+12",
+        -11: "Pacific/Niue",
+        -10: "Pacific/Honolulu",
+        -9:  "America/Anchorage",
+        -8:  "America/Los_Angeles",
+        -7:  "America/Denver",
+        -6:  "America/Chicago",
+        -5:  "America/New_York",
+        -4:  "America/Halifax",
+        -3:  "America/Argentina/Buenos_Aires",
+        -2:  "America/Noronha",
+        -1:  "Atlantic/Azores",
+         0:  "UTC",
+         1:  "Europe/Lisbon",           # or Europe/London in winter
+         2:  "Europe/Prague",           # FTMO, IC Markets, etc.
+         3:  "Europe/Moscow",           # UTC+3, many brokers use this
+         4:  "Asia/Dubai",
+         5:  "Asia/Karachi",
+         6:  "Asia/Dhaka",
+         7:  "Asia/Bangkok",
+         8:  "Asia/Singapore",          # or Asia/Hong_Kong
+         9:  "Asia/Tokyo",
+         10: "Australia/Sydney",
+         11: "Pacific/Noumea",
+         12: "Pacific/Auckland"
+    }
+
+    # round offset in case of small decimals like 2.0 or -3.5
+    offset_int = int(round(offset_hours))
+    tz_name = offset_map.get(offset_int, "unkown")
+
+    sign = "+" if offset_int >= 0 else ""
+    utc_name = f"UTC{sign}{offset_int}"
+
+    return tz_name, utc_name
+
+def tz_to_utc_offset(tz_name: str) -> str:
+    """Convert timezone name to UTC±X offset string"""
+    try:
+        tz = ZoneInfo(tz_name)
+        now = datetime.now(tz)
+        offset_hours = now.utcoffset().total_seconds() / 3600
+        sign = "+" if offset_hours >= 0 else "-"
+        return f"UTC{sign}{abs(offset_hours):.0f}"
+    except Exception as e:
+        print(f"⚠️ Could not resolve timezone '{tz_name}': {e}")
+        return "UTC+0"
 
 
 if __name__ == "__main__":
 
 
-    ticker = load_symbol("MNQ=F")
-    #df = load_yfinance("MNQ=F", start="2025-08-16", end="2025-09-16", interval="5m")
-    df = load_binance("BTC/USDT", start="2023-01-01", end="2023-02-01", interval="5m")
-
+    df = yfin_load_data("MNQ=F")
     
     
     #print(load_symbol("MNQ=F"))
