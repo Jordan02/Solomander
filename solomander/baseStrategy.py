@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import pytz
 
-from typing import final
+from typing import final, Optional
 
 try:
     from .indicators import vwap, sessions
@@ -66,12 +66,12 @@ class Strategy:
 
 
         # ---- panda dataframes ----
-        self.df = None                      # main dataframe (candles/indiciators)
-        self.tf = None                      # trade dataframe
-        self.oo = None                      # open orders dataframe
-        self.cc = None                      # closed orders dataframe
-        self.df_cum_margin = None         # cumulative margin dataframe for plotting
-        self.df_cum_pnl = None         # cumulative margin dataframe for plotting
+        self.df:Optional[pd.DataFrame] = None                 # main dataframe (candles/indiciators)
+        self.tf:Optional[pd.DataFrame] = None                 # trade dataframe
+        self.oo:Optional[pd.DataFrame] = None                 # open orders dataframe
+        self.cc:Optional[pd.DataFrame] = None                 # closed orders dataframe
+        self.df_cum_margin:Optional[pd.DataFrame] = None      # cumulative margin dataframe for plotting
+        self.df_cum_pnl:Optional[pd.DataFrame] = None         # cumulative margin dataframe for plotting
 
         # ---- Order and data lists ----
         self.l_orders_open =[]
@@ -82,7 +82,6 @@ class Strategy:
         
         # ---- Market info (static) ----
         self.symbol_data = {} 
-        
         
         self.START_MARGIN = 10000.0     # starting margin (KWARGS UPDATED)
         
@@ -133,7 +132,7 @@ class Strategy:
         self.l_CUMSUM_PNL = []
         self.l_RAW_PNL = []
         self.l_RETURN = []
-        self.l_DATETIME_RETURN = [] # updated in _check_sltp() for returns
+        self.L_RETURN_DATES = [] # updated in _check_sltp() for returns
         self.l_PROFIT = []
         self.l_LOSS = []
         
@@ -181,10 +180,13 @@ class Strategy:
         self.AVERAGE_RETURN = 0.0
 
         # ----- All **kwargs stored as params -----
-        self.INPUT_PARAMS = kwargs
         self.INITIAL_KWARGS = kwargs.copy() # store original kwargs for reference
         for key, value in kwargs.items():
             setattr(self, key, value)
+
+        self.INPUT_PARAMS = {
+            k: v for k, v in self.__dict__.items() if k.startswith("var_")
+        }
 
         # ----- params for recalculation -----                                                            
         self.MARGIN             = self.START_MARGIN                                                           # starting margin
@@ -239,7 +241,6 @@ class Strategy:
         """ Logic to execute when sell_condition is true """
         return
 
-    
     def loop_update(self, i):
         """ updates to be made each loop (data received) """
 
@@ -248,6 +249,18 @@ class Strategy:
         self.l_DATETIMES.append(self.df.index[i])
 
         return
+    
+    # --- hooks and callback methods for runners ---
+
+    def on_sell_bracket(self, i):
+        return
+    
+    def on_buy_bracket(self, i):
+        return
+    
+    def on_bracket_close(self, i):
+        return
+    
 
     # ====== FUNCTIONS ======
     
@@ -290,8 +303,8 @@ class Strategy:
         PROFIT_FACTOR = (TOTAL_PROFIT / (TOTAL_LOSS*-1)) if TOTAL_LOSS != 0 else 0
 
         if len(self.l_RETURN) > 1:
-            SHARPE_RATIO_DAILY = sharpe(self.l_RETURN, self.l_DATETIME_RETURN, mode="daily")
-            SORTINO_RATIO_DAILY = sortino(self.l_RETURN, self.l_DATETIME_RETURN, mode="daily")
+            SHARPE_RATIO_DAILY = sharpe(self.l_RETURN, self.L_RETURN_DATES, mode="daily")
+            SORTINO_RATIO_DAILY = sortino(self.l_RETURN, self.L_RETURN_DATES, mode="daily")
         else:
             SHARPE_RATIO_DAILY = 0
             SORTINO_RATIO_DAILY = 0
@@ -526,7 +539,9 @@ class Strategy:
                 sl_condition = self.data['high'][i] >= order_sl['price']
                 tp_pnl = (order['price'] - order_tp['price']) * qty*self.POINT_LEVERAGE
                 sl_pnl = (order['price'] - order_sl['price']) * qty*self.POINT_LEVERAGE
-
+            
+            
+               
             ## -------- TL HIT --------
             if tp_condition: 
         
@@ -546,7 +561,7 @@ class Strategy:
                 self.MARGIN += self.LAST_PNL
 
                 self.LAST_RETURN = self.LAST_PNL/previous_margin if previous_margin !=0 else 0
-                self.l_DATETIME_RETURN.append(self.data['datetime'][i])
+                self.L_RETURN_DATES.append(self.data['datetime'][i])
 
                 if order_side =='buy':
                     self.WINS_LONG +=1
@@ -574,6 +589,7 @@ class Strategy:
                                         'pnl': self.LAST_PNL,
                                         'margin': self.MARGIN,
                                         'return': self.LAST_RETURN,
+                                        'market_change': (order_tp['price'] - order['price'])/order['price'],
                                         'comments': ''})
                 
                 # remove from open_orders
@@ -614,7 +630,7 @@ class Strategy:
                 self.MARGIN += self.LAST_PNL
                 
                 self.LAST_RETURN = self.LAST_PNL/previous_margin if previous_margin !=0 else 0
-                self.l_DATETIME_RETURN.append(self.data['datetime'][i])
+                self.L_RETURN_DATES.append(self.data['datetime'][i])
 
                 self.update_metrics() 
 
@@ -635,6 +651,7 @@ class Strategy:
                                         'pnl': self.LAST_PNL,
                                         'margin': self.MARGIN,
                                         'return': self.LAST_RETURN,
+                                        'market_change': (order_sl['price'] - order['price'])/order['price'],
                                         'comments': ''})
                         
                 #move remove from open_orders
@@ -752,7 +769,7 @@ class Strategy:
         top_row = (f"Name: `{self.MARKET_NAME}`\n"
                    f"Symbol: `{self.MARKET_SYMBOL}`\n"
                    f"Interval: `{self.TIME_INTERVAL_STR}`\n"
-                   f"Timezone: `{self.df.index.tz}`\n"
+                   f"Timezone: `{None if self.df.index.tz is None else self.df.index.tz}`\n"
                    f"Server Timezone: `{self.DATA_TZ} / {self.DATA_TZ_UTC}`\n"
                    f"Data Server: `{self.DATA_SERVER}`\n")
 
@@ -851,7 +868,14 @@ class Strategy:
         for key, value in self.INPUT_PARAMS.items():
             inputs += f"{key}: `{value}`\n"
 
-        embed = [ {'value': inputs, 'type': "text", 'inline': False, "title": ""}]
+        df_col = ""
+        for value in self.df.columns:
+            df_col += f"{value}\n"
+
+        col1 = {'value': inputs, 'type': "text", 'inline': True, "title": "Variables"}
+        col2 = {'value': df_col, 'type': "text", 'inline': True, "title": "Data Frame Columns"}
+
+        embed = [col2,col1]
 
         return [embed, color, title]
     

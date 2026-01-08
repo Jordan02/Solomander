@@ -3,6 +3,9 @@ import numpy as np
 import random
 import matplotlib.pyplot as plt
 import colorsys
+import os
+import json
+import io
 
 try:
     from .logger import log, stamp, pront
@@ -166,7 +169,62 @@ def print_boxed_title(title):
     pront.info(f"╚{line}╝")
 
 
+def load_graph_color()-> dict:
+    
+    # color settings
+    json_path = os.path.join(os.path.dirname(__file__), "..", "settings", "settings.json")
 
+    try:
+        with open(json_path, "r") as f:
+            all_data = json.load(f)
+            display_mode = all_data.get("display_theme")
+    except Exception as e:
+        log.error(f"Error decoding JSON from file at {json_path}: {e}")
+        return None
+
+
+     # file path
+    json_path = os.path.join(os.path.dirname(__file__), "..", "settings", "graphs.json")
+
+    try:
+        with open(json_path, "r") as f:
+            all_data = json.load(f)
+            symbol_info = all_data.get(display_mode)
+            return symbol_info
+    except Exception as e:
+        log.error(f"Error decoding JSON from file at {json_path}: {e}")
+        return None
+    
+
+
+def format_graph(fig, axs: list, discord=False):
+
+    graph_color=load_graph_color()
+    plt.tight_layout(pad=0.5)
+
+    for ax in axs:
+        ax.grid(True, alpha=0.2, color=graph_color["grid"])
+        ax.xaxis.label.set_color(graph_color["text"])
+        ax.yaxis.label.set_color(graph_color["text"])
+        ax.title.set_color(graph_color["text"])
+        ax.tick_params(axis='x', colors=graph_color["grid"])
+        ax.tick_params(axis='y', colors=graph_color["grid"])
+        ax.grid(False, axis="x")
+        if discord:
+            ax.set_facecolor("none")
+        
+    if discord:
+        #remove background
+        fig.patch.set_alpha(0.0)   
+        # save to a BytesIO buffer instead of disk
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png", bbox_inches="tight")
+        buf.seek(0)
+        plt.close(fig)
+        return buf
+    else:
+        plt.show()
+        return fig
 
 
 if __name__ == "__main__":

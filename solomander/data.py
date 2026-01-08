@@ -251,6 +251,7 @@ def tz_from_utx_offset(offset_hours: int | float) -> str:
     Convert a numeric UTC offset (e.g. -3, +2) into a named timezone string.
     Falls back to an Etc/GMT zone if unknown.
     """
+    wrapped_hours = (offset_hours - 1) % 12 + 1
 
     offset_map = {
         -12: "Etc/GMT+12",
@@ -281,7 +282,7 @@ def tz_from_utx_offset(offset_hours: int | float) -> str:
     }
 
     # round offset in case of small decimals like 2.0 or -3.5
-    offset_int = int(round(offset_hours))
+    offset_int = int(round(wrapped_hours))
     tz_name = offset_map.get(offset_int, "unkown")
 
     sign = "+" if offset_int >= 0 else ""
@@ -300,6 +301,8 @@ def tz_to_utc_offset(tz_name: str) -> str:
     except Exception as e:
         print(f"⚠️ Could not resolve timezone '{tz_name}': {e}")
         return "UTC+0"
+
+
 
 
 if __name__ == "__main__":

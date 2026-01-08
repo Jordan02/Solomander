@@ -4,16 +4,17 @@ import matplotlib.pyplot as plt
 from scipy.stats import norm, skewnorm, skew
 import mplcyberpunk as cyberpunk
 import io
+import statsmodels.api as sm
 
 try:
     from .logger import log, stamp, pront
     from .baseStrategy import Strategy
-    from .utils import random_color, max_drawdown, sharpe, sortino, adjust_opacity, shift_hue
+    from .utils import random_color, max_drawdown, sharpe, sortino, adjust_opacity, shift_hue, format_graph, load_graph_color
     from .backtester import Backtester
 except ImportError:
     from logger import log, stamp, pront
     from solomander.baseStrategy import Strategy
-    from .utils import random_color, max_drawdown, sharpe, sortino, adjust_opacity, shift_hue
+    from .utils import random_color, max_drawdown, sharpe, sortino, adjust_opacity, shift_hue, format_graph, load_graph_color
     from backtester import Backtester
   
 
@@ -57,7 +58,8 @@ def monte_carlo (results:Strategy, runs:int=100, seed:int=None, discord = False,
     cyberpunk.make_lines_glow(ax)
 
     # plots
-    ax.axhline(0, color="#FFFFFF", linestyle="--")
+    graph_colors = load_graph_color()
+    ax.axhline(0, color=graph_colors["grid"], linestyle="--")
     ax.set_title("Monte Carlo")
     ax.set_xlabel("Trades")
     ax.set_ylabel("PnL")
@@ -80,7 +82,7 @@ def monte_carlo (results:Strategy, runs:int=100, seed:int=None, discord = False,
                     verticalalignment='top',
                     horizontalalignment='left',
                     rotation_mode='anchor',
-                    bbox=dict(boxstyle="round,pad=0.3", edgecolor="white", facecolor="none", alpha=0.7))
+                    bbox=dict(boxstyle="round,pad=0.3", edgecolor=graph_colors["grid"], facecolor="none", alpha=0.7))
     
     if mode == "permutation":
         
@@ -127,32 +129,14 @@ def monte_carlo (results:Strategy, runs:int=100, seed:int=None, discord = False,
         _plot_histogram(ax_sr, SR, bin_qty=50, textstr=f"Original SR: {original_sr_total:.2f}", title="", xlabel="Sharpe Ratio", color=color)
         _plot_histogram(ax_pnl, PNL, bin_qty=50, textstr=f"Original PnL: {original_pnl_total:.2f}", title="", xlabel="PnL", color=color)
 
-        ax_sr.grid(True, alpha=0.2, color="#ffffff")
-        ax_pnl.grid(True, alpha=0.2, color="#ffffff")
+        return format_graph(fig, [ax, ax_hist, ax_pnl, ax_sr], discord)
 
-        if discord:
-            ax_sr.set_facecolor("none")
-            ax_pnl.set_facecolor("none")
+    else:
+
+        return format_graph(fig, [ax, ax_hist], discord)    
 
     
-    plt.tight_layout(pad=0.5)
-    ax.grid(True, alpha=0.2, color="#ffffff")
-    ax_hist.grid(True, alpha=0.2, color="#ffffff")
 
-    # remove background
-    if discord:
-        fig.patch.set_alpha(0.0)       
-        ax.set_facecolor("none")
-        ax_hist.set_facecolor("none")
-
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", transparent=True, dpi=300)
-        buf.seek(0)
-        plt.close(fig)
-        return buf  # return the BytesIO buffer for Discord sending
-    else:
-        plt.show()
-        return fig
 
    
 def monte_carlo_metric(results:Strategy, runs:int=100,seed:int=42, mode:str="bootstrap"):
@@ -232,8 +216,9 @@ def _plot_histogram(ax, data, bin_qty=50, textstr="", title="Histogram", xlabel=
     # Plotting histogram
     ax.plot(xs, pdf, color=color, linewidth=2)
     cyberpunk.make_lines_glow(ax)
+    graph_color = load_graph_color()
     ax.axvline(skew_mean, color=color, linestyle="--", label="mean: {:.2f}".format(skew_mean))
-    ax.hist(data, bins=bin_qty, color=color, edgecolor="white", alpha=0.3)
+    ax.hist(data, bins=bin_qty, color=color, edgecolor=graph_color["grid"], alpha=0.3)
     
 
     #lower 95% limit
@@ -266,8 +251,9 @@ def _plot_histogram(ax, data, bin_qty=50, textstr="", title="Histogram", xlabel=
                         fontsize=7,
                         va='top',
                         ha='left',
+                        color=graph_color["text"],
                         rotation_mode='anchor',
-                        bbox=dict(boxstyle="round,pad=0.3", edgecolor="white", facecolor="none", alpha=0.7))
+                        bbox=dict(boxstyle="round,pad=0.3", edgecolor=graph_color["grid"], facecolor="none", alpha=0.7))
 
 
 def noise_test(strategy: Strategy, test_params: dict, nudges:int=3, color:str="#ff00c8", discord = False):
@@ -388,29 +374,56 @@ def noise_test(strategy: Strategy, test_params: dict, nudges:int=3, color:str="#
     _plot_histogram(ax_pnl, pnl_final, bin_qty=50, title="", xlabel="PnL", textstr=f"Original PnL: {strategy.TOTAL_PNL:.2f}", color=color)
 
 
-    plt.tight_layout(pad=0.5)
-    pos = ax.get_position()  # get current [left, bottom, width, height]
-    ax.set_position([pos.x0, pos.y0, pos.width * 0.95, pos.height])
-    
-    ax.grid(True, alpha=0.2, color="#ffffff")
-    ax_sr.grid(True, alpha=0.2, color="#ffffff")
-    ax_pnl.grid(True, alpha=0.2, color="#ffffff")
+    return format_graph(fig, [ax, ax_sr, ax_pnl], discord)
 
+
+
+
+def alpha(strategy: Strategy, discord=False, color = "#dd7600"):
+
+    index_returns = strategy.tf["market_change"]
+    strategy_returns = strategy.tf["return"]
+
+    X = sm.add_constant(index_returns)
+    y = strategy_returns
+    model = sm.OLS(y, X).fit()
+
+    print(model.summary())
+
+    alpha = model.params['const']
+    beta = model.params['market_change']
+    r2 = model.rsquared
+
+    print(f"\nAlpha: {alpha:.6f}  |  Beta: {beta:.3f}")
+    
+    plt.style.use("cyberpunk")
+    fig, ax = plt.subplots(figsize=(14,6))
+    
+    plt.scatter(index_returns, strategy_returns, alpha=0.3)
+    plt.xlabel("Market Returns")
+    plt.ylabel("Strategy Returns")
+    plt.title("Alpha/Beta Relationship")
+    x_vals = np.linspace(index_returns.min(), index_returns.max(), 100)
+    y_vals = alpha + beta * x_vals
+
+    plt.plot(x_vals, y_vals, color=color, lw=2, label=f'y = {alpha:.4f} + {beta:.2f}x')
+    cyberpunk.make_lines_glow(ax)
+
+    plt.axhline(0, color="white", linestyle="--", alpha=0.2 )
+    plt.axvline(0, color="white", linestyle="--", alpha=0.2 )
+    
     # remove background
     if discord:
         fig.patch.set_alpha(0.0)       
         ax.set_facecolor("none")
-        ax_sr.set_facecolor("none")
-        ax_pnl.set_facecolor("none")
-
+    
         buf = io.BytesIO()
         fig.savefig(buf, format="png", transparent=True, dpi=300)
         buf.seek(0)
         plt.close(fig)
         return buf  # return the BytesIO buffer for Discord sending
-    
     else:
+        plt.legend()
         plt.show()
         return fig
-
    

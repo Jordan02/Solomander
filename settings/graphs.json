@@ -1,0 +1,26 @@
+{   
+    "dark": 
+    {
+        "text": "#1f1f1f",
+        "background": "#1f1f1f",
+        "grid": "#1f1f1f"
+    },
+    "light": 
+    {
+        "text": "#fbfbfb",
+        "background": "#fbfbfb",
+        "grid": "#fbfbfb"
+    },
+    "gray": 
+    {
+        "text": "#919191",
+        "background": "#919191",
+        "grid": "#919191"
+    },
+     "master": 
+    {
+        "text": "#919191",
+        "background": "#919191",
+        "grid": "#919191"
+    }
+}

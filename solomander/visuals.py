@@ -7,19 +7,34 @@ matplotlib.use("Agg")  # non-GUI backend (for servers / threads)
 import matplotlib.pyplot as plt
 import mplcyberpunk as cyberpunk
 import io
+import numpy as np
 
 
 try:
 
     from .logger import log, stamp, pront
     from .data import yfin_load_data
-    
+    from .utils import load_graph_color, format_graph
 except ImportError:
     
     from logger import log, stamp, pront
     from data import yfin_load_data
+    from utils import load_graph_color, format_graph
     
-    
+
+"""
+.	'.'	small dot (pixel-like)
+o	'o'	circle (the one you’re using)
+s	's'	square
+t	't'	triangle (pointing up)
+d	'd'	diamond
++	'+'	plus sign
+x	'x'	cross
+p	'p'	pentagon
+h	'h'	hexagon
+
+"""
+
 
 
 def plot_trades(tf: pd.DataFrame, cc: pd.DataFrame, timestep, ax, boxes=False, trade_id=False):
@@ -104,13 +119,22 @@ def plot_timeblock(df, zone_col, ax, color="#2448e960", title=""):
         if title:
             fplt.add_text((start, low),f"{title} {zone_id}",color=color,ax=ax,)
             
-
 def plot_timeband(df, column, ax, color="#bdbdbd40", title=""):
 
     df_band = df.dropna(subset=[column])
 
     for day, group in df_band.groupby(df_band.index.date):
         fplt.add_vertical_band(group.index[0], group.index[-1], color=color, title=title)
+
+def plot_signal(signal: pd.Series, y: pd.Series, ax, color="#0FFF2F", style="o", title="", width = 1):
+    """Input signal is a time series of 0–1 or True/False values.
+    y is where you want to display the signal mark."""
+    
+    mask = signal.astype(bool)
+    y_mask = y
+    y_mask[mask==False] = np.nan
+    
+    fplt.plot(y,ax=ax,style=style,color=color,width=width, legend=title).setZValue(101)
 
 
 def basic_graph(x,y,color="#2ecc71",xlabel="X-axis",ylabel="Y-axis", discord=True):
@@ -123,23 +147,8 @@ def basic_graph(x,y,color="#2ecc71",xlabel="X-axis",ylabel="Y-axis", discord=Tru
     ax.set_ylabel(ylabel)
     cyberpunk.add_glow_effects()
 
-    ax.grid(True, alpha=0.2, color="#ffffff")
-    ax.grid(False, axis="x")
-    plt.tight_layout(pad=0.5)
+    figure = format_graph(fig, [ax], discord)
+    return figure
 
-    if discord:
-        #remove background
-        fig.patch.set_alpha(0.0)   
-        ax.set_facecolor("none")       
 
-        # save to a BytesIO buffer instead of disk
-        buf = io.BytesIO()
-        plt.savefig(buf, format="png", bbox_inches="tight")
-        buf.seek(0)
-        plt.close(fig)
-        return buf
-    else:
-        plt.show()
-        return fig
 
-    

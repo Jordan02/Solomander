@@ -1,13 +1,13 @@
 
 from .data import yfin_load_data, load_binance, read_symbol, write_symbol,  tz_from_utx_offset
 from .logger import log, stamp, pront, set_log_level
-from .indicators import vwap, timeblock, sessions, timeblock_value, sessions_value
+from .indicators import vwap, timeblock, sessions, timeblock_value, sessions_value, area_between
     
 from .baseStrategy import Strategy, Setting
-from .visuals import plot_trades, plot_timeblock, plot_timeband, basic_graph
-from .analysis import monte_carlo, monte_carlo_metric, _plot_histogram, noise_test
+from .visuals import plot_trades, plot_timeblock, plot_timeband, basic_graph, plot_signal
+from .analysis import monte_carlo, monte_carlo_metric, _plot_histogram, noise_test, alpha
 from .optimsation import Optimise
-from .utils import sharpe, sortino, max_drawdown, random_color, timedelta_to_str, print_boxed_title, adjust_opacity, shift_hue
+from .utils import sharpe, sortino, max_drawdown, random_color, timedelta_to_str, print_boxed_title, adjust_opacity, shift_hue, load_graph_color, format_graph
 from .mt5 import mt5_load_symbol, mt5_login, mt5_ensure_login, mt5_hdata, MT5_live
 from .backtester import Backtester
 from .discordBot import DiscordBot
@@ -21,12 +21,12 @@ os.environ["QT_LOGGING_RULES"] = "qt.qpa.*=false"
 __all__ = [
     "yfin_load_data", "load_binance", "read_symbol","write_symbol", "tz_from_utx_offset"
     "log", "stamp", "pront", "set_log_level",
-    "vwap", "timeblock", "sessions", "timeband", "timeblock_value", "sessions_value",
+    "vwap", "timeblock", "sessions", "timeband", "timeblock_value", "sessions_value", "area_between",
     "Strategy", "Setting",
-    "plot_trades", "plot_timeblock", "plot_timeband", "basic_graph",
-    "monte_carlo", "monte_carlo_metric", "_plot_histogram", "noise_test",
+    "plot_trades", "plot_timeblock", "plot_timeband", "basic_graph", "plot_signal"
+    "monte_carlo", "monte_carlo_metric", "_plot_histogram", "noise_test", "alpha",
     "Optimise",
-    "sharpe", "sortino", "max_drawdown", "random_color", "timedelta_to_str", "print_boxed_title", "adjust_opacity", "shift_hue",
+    "sharpe", "sortino", "max_drawdown", "random_color", "timedelta_to_str", "print_boxed_title", "adjust_opacity", "shift_hue", "load_graph_color", "format_graph"
     "mt5_load_symbol", "mt5_login", "mt5_ensure_login", "mt5_hdata", "MT5_live",
     "Backtester",
     "DiscordBot"

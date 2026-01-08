@@ -161,7 +161,26 @@ def timeblock_value(df, value='close', agg='max', start="9:30", end="16:00", tz=
     # --- convert back to original timezone ---
     result = result.tz_convert(orig_tz)
     return result
-    
+
+def area_between(df1:pd.Series, df2:pd.Series):
+
+    # get group container info
+    group_mode=df1.index.date
+    START_T = time(0,0)
+    END_T = time(23,59)
+
+    difference = df1-df2
+
+    diff_area = pd.Series(index=df1.index, dtype='float64')
+    for day, group in difference.groupby(group_mode):
+        group = group.between_time(START_T, END_T)
+        if group.empty:
+            continue
+        group_diff_area = group.cumsum()
+        diff_area.loc[group.index]=group_diff_area
+
+    return diff_area
+
 
 def sessions(df):
 

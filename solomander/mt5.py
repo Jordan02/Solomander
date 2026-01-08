@@ -18,6 +18,7 @@ from discord.ext import commands
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import numpy as np
+from typing import Optional, Union
 
 
 try: 
@@ -25,12 +26,14 @@ try:
     from .utils import timedelta_to_str, print_boxed_title
     from .data import read_symbol, _load_data, _write_data, tz_from_utx_offset, write_symbol
     from .baseStrategy import Strategy, Setting
+    from .discordBot import DiscordBot
 except ImportError: 
     #for running as main script
     from logger import log, stamp, pront
     from utils import timedelta_to_str, print_boxed_title
     from data import _load_data, _write_data, tz_from_utx_offset, write_symbol, read_symbol
     from baseStrategy import Strategy, Setting
+    from discordBot import DiscordBot
 
 
 MT5_TIMEFRAMES = {
@@ -87,12 +90,8 @@ def mt5_ensure_login():
         return 0
     return 1
 
-def mt5_load_symbol(symbol: str, read=False, write=False):
+def mt5_load_symbol(symbol: str, read=True, refresh_data=False):
     
-    # ----- ENSURE LOGIN -----
-    if not mt5_ensure_login():
-        log.error("❌ MT5 is not initialized. Please call login_mt5() first.")
-        return None
     
     # ----- WE WANT TO READ -----
     
@@ -104,6 +103,11 @@ def mt5_load_symbol(symbol: str, read=False, write=False):
         else:
             stamp.warning(f"🚧 {symbol} cannot be read from data_symbols.json, fetching now...")
     
+
+    # ----- ENSURE LOGIN -----
+    if not mt5_ensure_login():
+        log.error("❌ MT5 is not initialized. Please call login_mt5() first.")
+        return None
     
     # ----- FETCH DATA -----
     try:
@@ -114,11 +118,15 @@ def mt5_load_symbol(symbol: str, read=False, write=False):
         return None
     
     # ----- infer timezone  -----
-    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1) # get 1 candle
-    server_time = pd.to_datetime(rates[0]['time'], unit='s')
-    utc_now = datetime.now(timezone.utc)
-    offset = -int(round((utc_now.replace(tzinfo=None) - server_time).total_seconds() / 3600))
-    tz_name, tz_utc_offset  = tz_from_utx_offset(offset)
+    if refresh_data:
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1) # get 1 candle
+        server_time = pd.to_datetime(rates[0]['time'], unit='s')
+        utc_now = datetime.now(timezone.utc)
+        offset = -int(round((utc_now.replace(tzinfo=None) - server_time).total_seconds() / 3600))
+        tz_name, tz_utc_offset  = tz_from_utx_offset(offset)
+        if abs(offset)>3:
+            stamp.critical(f"{tz_utc_offset} is greater than 3hr shift: mt5 servers are typically in Europe/Moscow / UTC+3. Is it the weekend? Markets will not update on Weekends - Data is likely not syncing to time correctly. Check that volume spikes allign to NY open to validate.")
+
 
     symbol_info =  {
                     "symbol": info.name,
@@ -140,7 +148,7 @@ def mt5_load_symbol(symbol: str, read=False, write=False):
                 } 
     
     # IF WE WANT TO WRITE
-    if write:
+    if refresh_data:
         write_success = write_symbol(symbol_info)
         if write_success:
             stamp.success(f"✅ {symbol} info successfully wrote to data_symbols.json")
@@ -151,13 +159,15 @@ def mt5_load_symbol(symbol: str, read=False, write=False):
 
 
 
-def mt5_hdata(symbol: str, mt5_time_interval, candle_lookback: int = 1000, candle_offset: int = 0, download_data=True) -> pd.DataFrame:
+def mt5_hdata(symbol: str, mt5_time_interval, candle_lookback: int = 1000, candle_offset: int = 0, read=True, refresh_data=False) -> pd.DataFrame:
 
     
     # ----- CHECK IF FILE EXISTS -----
-    if download_data == True:
-        interval_str = MT5_TIMEFRAMES.get(mt5_time_interval, "unknown")
-        filename = f"mt5_{symbol}_{candle_lookback}c_{candle_offset}o_{interval_str}.csv".replace("-", "").replace("/", "-")
+
+    interval_str = MT5_TIMEFRAMES.get(mt5_time_interval, "unknown")
+    filename = f"mt5_{symbol}_{candle_lookback}c_{candle_offset}o_{interval_str}.csv".replace("-", "").replace("/", "-")
+    
+    if read == True:
         df = _load_data(filename) 
         if df is not None:
             stamp.success(f"✅ Data loaded from data/{filename} Opening now queen.")
@@ -176,7 +186,7 @@ def mt5_hdata(symbol: str, mt5_time_interval, candle_lookback: int = 1000, candl
     df = _mt5_format_data(rates, symbol_data_tz_local)
 
     # ----- WRITE DATA -----
-    if download_data == True:
+    if refresh_data == True:
         _write_data(df,filename)
         stamp.success(f"✅ {symbol} saved to data/{filename}. tz: {df.index.tz} {df.index[0].strftime("%d/%m/%y")} to {df.index[-1].strftime("%d/%m/%y")}, {mt5_time_interval} intervals, {candle_lookback} candles ")
 
@@ -192,6 +202,7 @@ def _mt5_format_data(mt5_rates, tz_local) -> pd.DataFrame:
     # mt5_rates come in as numpy.ndarray with no timezone
     # THIS IS FINE, BACKTESTERS _UPDATE_DATA_ARRAYS will format data
     df = pd.DataFrame(mt5_rates)
+
     df['time'] = pd.to_datetime(df['time'], unit='s')
     df.rename(columns={"time": "datetime", "tick_volume": "volume"}, inplace=True)
     df.set_index('datetime', inplace=True)
@@ -202,19 +213,22 @@ def _mt5_format_data(mt5_rates, tz_local) -> pd.DataFrame:
 
 
 class _mt5Strategy():
+    
+    discord_bot: DiscordBot 
 
-    def __init__(self, strategy_instance: Strategy, df: pd.DataFrame, symbol_info: dict):
+    def __init__(self, strategy_instance: Strategy, symbol_info: dict):
         
         self.s = strategy_instance                      # keep the original instance
-        self.s.df = df.copy()
 
         # New settings and parameters
         self.s.setting_slippage_entry = Setting.SLIP_OFF
         self.s.setting_slippage_sl = Setting.SLIP_OFF
         self.s.setting_slippage_tp = Setting.SLIP_OFF
         self.s.setting_rounding_method = Setting.ROUND_NEAREST
-        
 
+        # discord bot instance
+        self.discord_bot = None
+        
         # any market params you want (store them here; use in wrappers as needed)
         self.s.symbol_data        = symbol_info.copy()
         
@@ -258,6 +272,13 @@ class _mt5Strategy():
 
         #log.debug("BacktesterStrategy wrapper instance created, strategy updated and wrapper methods added")
         pass
+    
+
+
+    @final
+    def discord_msg(self, msg):
+        if self.discord_bot: 
+            self.discord_bot.post_message(msg)
 
     @final
     def sell_bracket(self, i, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
@@ -274,6 +295,7 @@ class _mt5Strategy():
                 _tp_price = self.s._round_to_tick(tp_price, self.s._setting_rm_sell_tp)
         except Exception as e:
             log.error(f"❌ Error calculating SL/TP prices: {e}")
+            self.discord_msg(f"❌ Error calculating SL/TP prices: {e}")
         
         # ------- Call parent logic (handles counters, tracking, etc.) -------
         self.sell_bracket_original(i, qty, sl_price, tp_price, sl_pips, tp_pips, comments)
@@ -281,6 +303,7 @@ class _mt5Strategy():
         # ------- Send the MT5 market order -------
         if self.s.setting_strategy_mode is Setting.MODE_TEST:
             stamp.success(f"🔽🧪[TEST MODE]: SELL (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
+            self.discord_msg(f"🔽🧪[TEST MODE]: SELL (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
             return
         else:
         
@@ -303,9 +326,12 @@ class _mt5Strategy():
             if result.retcode != mt5.TRADE_RETCODE_DONE:
                 stamp.error(f"🔽❌[LIVE]: SELL (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
                 stamp.error(f"🔽❌[LIVE]: MT5 SELL order failed: {result.retcode}")
+                self.discord_msg(f"🔽❌[LIVE]: SELL (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
+                self.discord_msg(f"🔽❌[LIVE]: MT5 SELL order failed: {result.retcode}")
                 return
             else:
                 stamp.success(f"🔽🟢[LIVE]: SELL (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
+                self.discord_msg(f"🔽🟢[LIVE]: SELL (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
                 return
 
     @final
@@ -323,6 +349,8 @@ class _mt5Strategy():
                 _tp_price = self.s._round_to_tick(tp_price, self.s._setting_rm_buy_tp)
         except Exception as e:
             log.error(f"❌ Error calculating SL/TP prices: {e}")
+            if self.discord_bot: 
+                self.discord_bot.post_message(f"❌ Error calculating SL/TP prices: {e}")
         
         # ------- Call parent logic (handles counters, tracking, etc.) -------
         self.buy_bracket_original(i, qty, sl_price, tp_price, sl_pips, tp_pips, comments)
@@ -331,6 +359,8 @@ class _mt5Strategy():
         # ------- Send the MT5 market order -------
         if self.s.setting_strategy_mode is Setting.MODE_TEST:
             stamp.success(f"🔼🧪[TEST MODE]: BUY (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
+            if self.discord_bot: 
+                self.discord_bot.post_message(f"🔼🧪[TEST MODE]: BUY (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
             return
         else:
         
@@ -353,9 +383,14 @@ class _mt5Strategy():
             if result.retcode != mt5.TRADE_RETCODE_DONE:
                 stamp.error(f"🔼❌[LIVE]: BUY (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
                 stamp.error(f"🔼❌[LIVE]: MT5 BUY order failed: {result.retcode}")
+                if self.discord_bot:
+                    self.discord_bot.post_message(f"🔼❌[LIVE]: BUY (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
+                    self.discord_bot.post_message(f"🔼❌[LIVE]: MT5 BUY order failed: {result.retcode}")
                 return
             else:
                 stamp.success(f"🔽🟢[LIVE]: BUY (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
+                if self.discord_bot: 
+                    self.discord_bot.post_message(f"🔽🟢[LIVE]: BUY (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
                 return
 
         
@@ -395,10 +430,10 @@ class MT5_live(Strategy):
         # ----- ENSURE MT5 LOGIN -----
         mt5_login()
 
-        self.wrapper = _mt5Strategy(strategy_instance, 
-                                    df=pd.DataFrame(), 
+        self.wrapper = _mt5Strategy(strategy_instance,  
                                     symbol_info=mt5_load_symbol(symbol_str)  
                                     )
+        
         
         self.wrapper.s.setting_strategy_mode = Setting.MODE_TEST if test_mode else Setting.MODE_LIVE
         self.wrapper.s.TIME_INTERVAL = timeframe 
@@ -412,6 +447,7 @@ class MT5_live(Strategy):
         self.wrapper.s.setting_listen_time = self.setting_listen_time
 
         self.s = self.wrapper.s  # shortcut to strategy instance
+        self.wrapper.s.df = self._mt5_fetch_latest(2) # give intial data
          
         
      
@@ -462,6 +498,7 @@ class MT5_live(Strategy):
         """Check if a new bar has formed and reset flag when it does."""
         latest_candle_time = self.wrapper.s.df.index[-1]  # current bar open time
 
+        # intialise this variable
         if not hasattr(self, "_last_candle_time"):
             self._last_candle_time = latest_candle_time
             return
@@ -482,7 +519,8 @@ class MT5_live(Strategy):
         # ----- is discord bot connected? -----
         if self._discord_attached.is_set() is False:
             stamp.warning("🚧 No Discord bot attached, proceeding without it.")
-            pass
+        else:   
+            self.wrapper.discord_bot = self.bot
 
         # ----- print input params -----
         label_width = 18 
@@ -497,20 +535,20 @@ class MT5_live(Strategy):
                 next_time = time.time()+ self.wrapper.s.POLL_INTERVAL
                 
                 # ----- LOOP LOGIC -----
-                stamp.info(f"🔄 datetime: {self.wrapper.s.df.index[-1].strftime('%H:%M:%S')} close: {self.wrapper.s.df['close'].iloc[-1]}")
+                stamp.info(f"🔄 datetime: {self.wrapper.s.df.index[-1].strftime('%H:%M:%S')}| close: {self.wrapper.s.df['close'].iloc[-1]}| Open trades: {self.wrapper.s.OPEN_TRADES}")
                 
                 self.wrapper.s.loop_update(-1)
                 self.wrapper.s.df = self._mt5_fetch_latest(self.wrapper.s.CANDLE_BUFFER)  # fetch latest data
                 self.wrapper.s._update_data_arrays()
 
                 # buy logic (one trade per bar)
-                if self._bar_needs_closed.is_set():
+                if not self._bar_needs_closed.is_set():
                     if self.wrapper.s.buy_condition(-1):
                         self.wrapper.s.buy_action(-1)
                         self._bar_needs_closed.set()
                         pass
 
-                if self._bar_needs_closed.is_set():
+                if not self._bar_needs_closed.is_set():
                     if self.wrapper.s.sell_condition(-1):
                         self.wrapper.s.sell_action(-1)
                         self._bar_needs_closed.set()
@@ -538,7 +576,7 @@ if __name__ == "__main__":
 
 
     mt5_login()
-    symbol = mt5_load_symbol("US100.cash", read=True, write=True)
+    symbol = mt5_load_symbol("US100.cash", read=True, refresh_data=True)
     print(symbol)
 
    

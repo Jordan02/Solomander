@@ -18,11 +18,13 @@ try:
     from .logger import log, stamp, pront
     from .mt5 import MT5_live
     from .baseStrategy import Strategy
+    from .utils import random_color
 except ImportError: 
     #for running as main script
     from logger import log, stamp, pront
     from mt5 import MT5_live
     from baseStrategy import Strategy
+    from utils import random_color
   
 
 class DiscordBot:
@@ -167,7 +169,33 @@ class DiscordBot:
             else:
                 await ctx.send("😬 eh Live runner not attached sorry...")
                 stamp.warning("[Discord] 😬 Live runner not attached sorry...")
-                
+        
+        @self.bot.command(name="livesettings")
+        async def livesettings(ctx):
+        
+            if self._live_bot_attached.is_set():
+                    
+                column2 = (
+                f"_bar_needs_closed: `{self.live_bot._bar_needs_closed}`\n"
+                f"_last_candle_time: `{self.live_bot._last_candle_time}`\n"
+                f"_discord_attached: `{self.live_bot._discord_attached}`\n"
+                f"_running: `{self.live_bot._running}`\n"
+                f"_password_verified: `{self.live_bot._password_verified}`\n"
+                )
+
+                title = "🎮 Live Settings"
+                color= "#267b1c"
+                embed = [{'value': column2, 'type': "text", 'inline': True, "title": ""}]
+
+
+                embed,files = self._embed([embed, color, title])
+                embed.set_footer(text=f"For {ctx.author.display_name}",icon_url=ctx.author.display_avatar.url)
+
+                await ctx.send(embed=embed, files=files)
+                stamp.show(f"[Discord] {ctx.author} requested live settings in {ctx.channel}.")
+            else:
+                await ctx.send("😬 eh Live runner not attached sorry...")
+                stamp.warning("[Discord] 😬 Live runner not attached sorry...")
                 
 
 
