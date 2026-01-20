@@ -463,7 +463,6 @@ class Strategy:
         # ---- CHECKS ----
         if self._check_qty(qty) == 0:
             return
-        error_msg = None
         
          # ---- calculate entry, sl and tp prices with slippage and rounding ----
         _entry_price = self._round_to_tick(self.data['open'][i] - self._slippage(self.setting_slippage_entry), self._setting_rm_sell)
@@ -510,7 +509,7 @@ class Strategy:
                             'comments': comments}
         
         # ---- callback function for runners ---
-        market,sl,tp = self.on_sell_bracket([market_order, sl_order, tp_order], error_msg)
+        market,sl,tp = self.on_sell_bracket([market_order, sl_order, tp_order])
         
         # ---- update counters and lists ----
         self.l_orders_open.append(market)
