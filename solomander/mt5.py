@@ -214,20 +214,19 @@ def _mt5_format_data(mt5_rates, tz_local) -> pd.DataFrame:
 
 class _mt5Strategy():
     
-    discord_bot: DiscordBot 
-
-    def __init__(self, strategy_instance: Strategy, symbol_info: dict):
+    def __init__(self, stratgy_instance: Strategy, symbol_info: dict, **kwargs):
         
-        self.s = strategy_instance                      # keep the original instance
+        """
+        TODO 
+        - get actual account margin
+        """
+        self.s = stratgy_instance
 
         # New settings and parameters
         self.s.setting_slippage_entry = Setting.SLIP_OFF
         self.s.setting_slippage_sl = Setting.SLIP_OFF
         self.s.setting_slippage_tp = Setting.SLIP_OFF
         self.s.setting_rounding_method = Setting.ROUND_NEAREST
-
-        # discord bot instance
-        self.discord_bot = None
         
         # any market params you want (store them here; use in wrappers as needed)
         self.s.symbol_data        = symbol_info.copy()
@@ -263,143 +262,431 @@ class _mt5Strategy():
         self.s._setting_rm_sell_tp  = Setting.CEIL if self.s.setting_rounding_method == Setting.ROUND_WORST_CASE else Setting.ROUND
 
         # rebinding functions
+        self.s.on_buy_bracket = self.on_buy_bracket.__get__(self.s,self.s.__class__)   
+        self.s.on_sell_bracket = self.on_sell_bracket.__get__(self.s,self.s.__class__)   
+        self.s.on_bracket_close_tp = self.on_bracket_close_tp.__get__(self.s,self.s.__class__)   
+        self.s.on_bracket_close_sl = self.on_bracket_close_sl.__get__(self.s,self.s.__class__)   
+        self.s.tp_sl_conditions = self.tp_sl_conditions.__get__(self.s,self.s.__class__)   
 
-        self.buy_bracket_original = self.s.buy_bracket
-        self.sell_bracket_original = self.s.sell_bracket
-
-        self.s.buy_bracket = self.buy_bracket.__get__(self.s, self.s.__class__)
-        self.s.sell_bracket = self.sell_bracket.__get__(self.s, self.s.__class__)
-
-        #log.debug("BacktesterStrategy wrapper instance created, strategy updated and wrapper methods added")
-        pass
     
-
-
     @final
-    def discord_msg(self, msg):
-        if self.discord_bot: 
-            self.discord_bot.post_message(msg)
+    def on_sell_bracket(self, trade_orders:list = None):
 
-    @final
-    def sell_bracket(self, i, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
-        
-        # ------ set levels ------
-        _entry_price = self.s._round_to_tick(self.s.data['close'][-1], self.s._setting_rm_sell)
-        
-        try:
-            if tp_pips is not None and sl_pips is not None:
-                _sl_price = self.s._round_to_tick((_entry_price + sl_pips), self.s._setting_rm_sell_sl)
-                _tp_price = self.s._round_to_tick((_entry_price - tp_pips), self.s._setting_rm_sell_tp)
-            else:
-                _sl_price = self.s._round_to_tick(sl_price, self.s._setting_rm_sell_sl)
-                _tp_price = self.s._round_to_tick(tp_price, self.s._setting_rm_sell_tp)
-        except Exception as e:
-            log.error(f"❌ Error calculating SL/TP prices: {e}")
-            self.discord_msg(f"❌ Error calculating SL/TP prices: {e}")
-        
-        # ------- Call parent logic (handles counters, tracking, etc.) -------
-        self.sell_bracket_original(i, qty, sl_price, tp_price, sl_pips, tp_pips, comments)
-        
-        # ------- Send the MT5 market order -------
+        # ---- recieving order details see basestrategy lists for order column details ----
+        if trade_orders is None:
+            log.error("No trade order information received")
+            self.s.post_discord_message("No trade order information received")
+            return trade_orders
+
+        market, sl, tp = trade_orders
+        _comments = market['comments']
+        _id = market['trade_id']
+        _qty = market['qty']
+        _target_price = float(market['price'])
+        _sl_price = sl['price']
+        _tp_price = tp['price']
+        _tp_pips = float(_target_price - _tp_price)
+        _sl_pips = float(_sl_price - _target_price)
+
+        # ---- using active tick data for entries -----
+        tick = mt5.symbol_info_tick(self.s.MARKET_SYMBOL)
+        if tick is None:
+            log.error(f"🔽❌Tick unavailable (symbol_info_tick returned None)")
+            self.s.post_discord_message(f"🔽❌Tick unavailable (symbol_info_tick returned None)")
+            return trade_orders
+
+        d = mt5.symbol_info(self.s.MARKET_SYMBOL).digits
+        if d is None:
+            log.warning(f"🔽❌no symbol info digit data, defaulting to 2.d.p")
+            self.s.post_discord_message(f"🔽❌no symbol info digit data, defaulting to 2.d.p")
+            d = 2
+
+        # NOTE:
+        # - For SELL you typically request at bid (tick.bid). Keeping this aligned helps drift/slip metrics make sense.
+        # - Spread is still ask-bid.
+        _exec_price = float(tick.bid)
+        _spread = float(tick.ask - tick.bid)
+        _drift = float(_target_price - _exec_price)
+
+        # For SELL:
+        # - SL should be ABOVE entry by _sl_pips
+        # - TP should be BELOW entry by _tp_pips
+        _sl = float(_exec_price + _sl_pips)
+        _tp = float(_exec_price - _tp_pips)
+
+        # ---- update order tickets -----
+        market['price'] = _exec_price
+        sl['price'] = _sl
+        tp['price'] = _tp
+
+        # ---- logging messgae details ----
+        new_order_msg = (
+            f"`🔔Order`  `🔽Sell`  "
+            f"`{self.s.MODE_SYMBOL[self.s.setting_strategy_mode] + self.s.MODE_TEXT[self.s.setting_strategy_mode]}`  "
+            f"`🆔{_id}`  `qty: {_qty}`  `target: {_target_price:.{d}f}`  `exec:{_exec_price:.{d}f}`   "
+            f"`sl={_sl:.{d}f}`  `tp={_tp:.{d}f}`  "
+            f"`spread:{_spread:.{d}f}`  `drift:{_drift:.{d}f}`"
+        )
+        embed = [{'value': new_order_msg, 'type': "text", 'inline': False, "title": ""}]
+        color = self.s.MODE_COLOR[self.s.setting_strategy_mode]
+
+        # ---- logging data for TEST_MODE ----
         if self.s.setting_strategy_mode is Setting.MODE_TEST:
-            stamp.success(f"🔽🧪[TEST MODE]: SELL (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
-            self.discord_msg(f"🔽🧪[TEST MODE]: SELL (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
-            return
+            stamp.success(new_order_msg)
+            self.s.post_discord_embed([embed, color, ""])
+            return [market, sl, tp]
+
+        # ---- Scheduling MT5 order for LIVE MODE ----
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": self.s.MARKET_SYMBOL,
+            "volume": float(_qty),
+            "type": mt5.ORDER_TYPE_SELL,
+            "price": _exec_price,
+            "sl": _sl,
+            "tp": _tp,
+            "deviation": self.s.DEVIATION,
+            "magic": 123456,
+            "comment": _comments,
+            "type_filling": mt5.ORDER_FILLING_FOK,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+
+        result = mt5.order_send(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            log.error(f"🔽❌ FAIL:" + new_order_msg)
+            log.error(f"🔽❌ MT5 retcode: {result.retcode}")
+            self.s.post_discord_message(f"🔽❌ FAIL:" + new_order_msg)
+            self.s.post_discord_message(f"🔽❌ MT5 retcode: {result.retcode}")
         else:
+            # For SELL, slip (worse fill) should be positive if filled LOWER than requested is bad?
+            # Standardizing to "worse = positive":
+            # requested = _exec_price (bid), fill = result.price
+            # if fill is LOWER than requested on sell, that's worse (you sold cheaper) => positive slip = requested - fill
+            _slip = _exec_price - result.price
+
+            new_order_msg = new_order_msg + f"  `slip:{_slip:.{d}f}`"
+            embed = [{'value': new_order_msg, 'type': "text", 'inline': False, "title": ""}]
+            stamp.success(new_order_msg)
+            self.s.post_discord_embed([embed, color, ""])
+
+        return [market, sl, tp]
+
+    @final
+    def on_buy_bracket(self, trade_orders:list = None):
+
+        # ---- recieving order details see basestrategy lists for order column detaials ----
+
+        if trade_orders is None:
+            log.error("No trade order information received")
+            self.s.post_discord_message("No trade order information received")
+            return trade_orders
         
-            request = {
+        market, sl, tp = trade_orders
+        _id = market['trade_id']
+        _comments = market['comments']
+        _qty = market['qty']
+        _sl_price = sl['price']
+        _tp_price = tp['price']
+        _target_price = float(market['price'])
+        _tp_pips = float(_tp_price - _target_price)
+        _sl_pips = float(_target_price - _sl_price)
+
+        # ---- using active tick data for entries -----
+
+        tick = mt5.symbol_info_tick(self.s.MARKET_SYMBOL)
+        if tick is None:
+            log.error(f"🔼❌Tick unavailable (symbol_info_tick returned None)")
+            self.s.post_discord_message(f"🔼❌Tick unavailable (symbol_info_tick returned None)")
+            return trade_orders
+        
+        d = mt5.symbol_info(self.s.MARKET_SYMBOL).digits
+        if d is None:
+            log.warning(f"🔼❌no symbol info digit data, defaulting to 2.d.p")
+            self.s.post_discord_message(f"🔼❌no symbol info digit data, defaulting to 2.d.p")
+            d = 2
+
+        _exec_price = float(tick.ask)
+        _spread = float(tick.ask-tick.bid)
+        _drift = float(_target_price-_exec_price)
+        _sl = float(_exec_price - _sl_pips)
+        _tp = float(_exec_price + _tp_pips)
+
+        # ---- update order tickets -----
+
+        market['price'] = _exec_price
+        sl['price'] = _sl
+        tp['price'] = _tp
+
+        # ---- logging messgae details ----
+
+        new_order_msg = f"`🔔Order`  `🔼buy`  `{self.s.MODE_SYMBOL[self.s.setting_strategy_mode] + self.s.MODE_TEXT[self.s.setting_strategy_mode]}`  `🆔{_id}`  `qty: {_qty}`  `target: {_target_price:.{d}f}`  `exec:{_exec_price:.{d}f}`   `sl={_sl:.{d}f}`  `tp={_tp:.{d}f}`   `spread:{_spread:.{d}f}`  `drift:{_drift:.{d}f}`"
+        embed = [{'value': new_order_msg, 'type': "text", 'inline': False, "title": ""}]
+        color = self.s.MODE_COLOR[self.s.setting_strategy_mode]
+
+        # ---- logging data for TEST_MODE ----
+        if self.s.setting_strategy_mode is Setting.MODE_TEST:
+            stamp.success(new_order_msg)
+            self.s.post_discord_embed([embed, color, ""])
+            return [market, sl, tp]
+    
+        # ---- Scheduling MT5 order for LIVE MODE ----
+        request = {
                         "action": mt5.TRADE_ACTION_DEAL,
                         "symbol": self.s.MARKET_SYMBOL,
-                        "volume": float(qty),
-                        "type": mt5.ORDER_TYPE_SELL,
-                        "price": float(_entry_price),
-                        "sl": float(_sl_price),
-                        "tp": float(_tp_price),
-                        "deviation": self.s.DEVIATION,
-                        "magic": 123456,
-                        "comment": comments,
-                        "type_filling": mt5.ORDER_FILLING_FOK,
-                        "type_time": mt5.ORDER_TIME_GTC,
-            }
-            
-            result = mt5.order_send(request)
-            if result.retcode != mt5.TRADE_RETCODE_DONE:
-                stamp.error(f"🔽❌[LIVE]: SELL (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
-                stamp.error(f"🔽❌[LIVE]: MT5 SELL order failed: {result.retcode}")
-                self.discord_msg(f"🔽❌[LIVE]: SELL (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
-                self.discord_msg(f"🔽❌[LIVE]: MT5 SELL order failed: {result.retcode}")
-                return
-            else:
-                stamp.success(f"🔽🟢[LIVE]: SELL (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
-                self.discord_msg(f"🔽🟢[LIVE]: SELL (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
-                return
-
-    @final
-    def buy_bracket(self, i, qty, sl_price=None, tp_price=None, sl_pips=None, tp_pips=None, comments=''):
-        
-         # ------ set levels ------
-        _entry_price = self.s._round_to_tick(self.s.data['close'][-1], self.s._setting_rm_buy)
-        
-        try:
-            if tp_pips is not None and sl_pips is not None:
-                _sl_price = self.s._round_to_tick((_entry_price - sl_pips), self.s._setting_rm_buy_sl)
-                _tp_price = self.s._round_to_tick((_entry_price + tp_pips), self.s._setting_rm_buy_tp)
-            else:
-                _sl_price = self.s._round_to_tick(sl_price, self.s._setting_rm_buy_sl)
-                _tp_price = self.s._round_to_tick(tp_price, self.s._setting_rm_buy_tp)
-        except Exception as e:
-            log.error(f"❌ Error calculating SL/TP prices: {e}")
-            if self.discord_bot: 
-                self.discord_bot.post_message(f"❌ Error calculating SL/TP prices: {e}")
-        
-        # ------- Call parent logic (handles counters, tracking, etc.) -------
-        self.buy_bracket_original(i, qty, sl_price, tp_price, sl_pips, tp_pips, comments)
-        
-
-        # ------- Send the MT5 market order -------
-        if self.s.setting_strategy_mode is Setting.MODE_TEST:
-            stamp.success(f"🔼🧪[TEST MODE]: BUY (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
-            if self.discord_bot: 
-                self.discord_bot.post_message(f"🔼🧪[TEST MODE]: BUY (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
-            return
-        else:
-        
-            request = {
-                        "action": mt5.TRADE_ACTION_DEAL,
-                        "symbol": self.s.MARKET_SYMBOL,
-                        "volume": float(qty),
+                        "volume": float(_qty),
                         "type": mt5.ORDER_TYPE_BUY,
-                        "price": float(_entry_price),
-                        "sl": float(_sl_price),
-                        "tp": float(_tp_price),
+                        "price": _exec_price,
+                        "sl": _sl,
+                        "tp": _tp,
                         "deviation": self.s.DEVIATION,
                         "magic": 123456,
-                        "comment": comments,
+                        "comment": _comments,
                         "type_filling": mt5.ORDER_FILLING_FOK,
                         "type_time": mt5.ORDER_TIME_GTC,
             }
-            
-            result = mt5.order_send(request)
-            if result.retcode != mt5.TRADE_RETCODE_DONE:
-                stamp.error(f"🔼❌[LIVE]: BUY (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
-                stamp.error(f"🔼❌[LIVE]: MT5 BUY order failed: {result.retcode}")
-                if self.discord_bot:
-                    self.discord_bot.post_message(f"🔼❌[LIVE]: BUY (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
-                    self.discord_bot.post_message(f"🔼❌[LIVE]: MT5 BUY order failed: {result.retcode}")
-                return
-            else:
-                stamp.success(f"🔽🟢[LIVE]: BUY (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
-                if self.discord_bot: 
-                    self.discord_bot.post_message(f"🔽🟢[LIVE]: BUY (qty={qty}, @{_entry_price}, sl={_sl_price}, tp={_tp_price})")
-                return
+        
+        result = mt5.order_send(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            log.error(f"🔼❌ FAIL:" + new_order_msg)
+            log.error(f"🔼❌ MT5 retcode: {result.retcode}")
+            self.s.post_discord_message(f"🔼❌ FAIL:" + new_order_msg)
+            self.s.post_discord_message(f"🔼❌ MT5 retcode: {result.retcode}")
+        else:
+            _slip = result.price - _exec_price
+            new_order_msg = new_order_msg + f"  `slip:{_slip:.{d}f}`"
+            embed = [{'value': new_order_msg, 'type': "text", 'inline': False, "title": ""}]
+            stamp.success(new_order_msg)
+            self.s.post_discord_embed([embed, color, ""])
+        
+        return  [market, sl, tp]
 
+    @final
+    def on_bracket_close_tp(self, trade_orders:list = None):
+
+
+        """
+        Callback used by live runners when a TP is hit.
+
+        Base/backtest behaviour:
+            - simply returns the orders unchanged (so the engine uses candle-derived prices)
+
+        Live behaviour (MT5 runner):
+            - fetch the latest tick
+            - choose a realistic executable close price for the TP leg
+            - update order_tp['price'] (and optionally its time)
+            - keep everything else consistent so internal PnL uses the corrected exit
+        """
+
+        # ---- recieving order details see basestrategy lists for order column detaials ----
+        if trade_orders is None:
+            log.error("No trade order information received")
+            self.s.post_discord_message("No trade order information received")
+            return trade_orders
+
+        order, order_sl, order_tp = trade_orders
+
+        _id        = order.get('trade_id', None)
+        _qty       = order.get('qty', None)
+        _side      = order.get('side', None)          # open side: "buy" or "sell"
+        _entry     = float(order.get('price', 0.0))
+        _tp_target = float(order_tp.get('price', 0.0))
+
+        # ---- using active tick data for close ----
+        tick = mt5.symbol_info_tick(self.s.MARKET_SYMBOL)
+        if tick is None:
+            log.error("❌Tick unavailable (symbol_info_tick returned None)")
+            self.s.post_discord_message("❌Tick unavailable (symbol_info_tick returned None)")
+            return trade_orders
+
+        info = mt5.symbol_info(self.s.MARKET_SYMBOL)
+
+        # NOTE:
+        # - digits controls display precision for logs (and can be used for rounding if desired).
+        # - if symbol_info is unavailable, fall back to 2dp so discord logs don’t explode.
+        d = getattr(info, "digits", None)
+        if d is None:
+            log.warning("❌no symbol info digit data, defauling to 2.d.p")
+            self.s.post_discord_message("❌no symbol info digit data, defauling to 2.d.p")
+            d = 2
+
+        _bid = float(tick.bid)
+        _ask = float(tick.ask)
+        _spread = float(_ask - _bid)
         
 
+        # NOTE:
+        # When TP is hit, the *close* is the opposite side of the original position:
+        # - If the position is a BUY (long), you close by SELLing -> executable at BID.
+        # - If the position is a SELL (short), you close by BUYing -> executable at ASK.
+        if _side == "buy":
+            _exec_close = _bid
+            _close_symbol = "🔽"
+            _pnl = float(_exec_close - _entry)       # negative = loss
+            _drift = float(_exec_close - _tp_target) # negative = loss
+        else:
+            _exec_close = _ask
+            _close_symbol = "🔼"
+            _pnl = float(_exec_close - _tp_target)    # negative = loss
+            _drift = float(_tp_target-_exec_close)    # negative = loss
+
+
+        # ---- update the TP order ticket used by internal accounting ----
+        # We want your later logic to use order_tp['price'] as the exit price, so overwrite it here.
+        order_tp['price'] = _exec_close
+
+        # OPTIONAL:
+        # If you want the closed order stamps to reflect "now", you can set these here,
+        # but only do it if your calling code expects it (your loop already sets entry_time later).
+        #
+        # order_tp['entry_time'] = datetime.now()  # not recommended unless you standardize timezones
+
+        # ---- logging (optional but consistent with your other callbacks) ----
+        new_msg = (
+            f"`🎯Tp hit`  `{_close_symbol}Close`   `{self.s.MODE_SYMBOL[self.s.setting_strategy_mode] + self.s.MODE_TEXT[self.s.setting_strategy_mode]}`  `🟩PNL:{self.s.TICK_CURRENCY}{_pnl:.{2}f}` "
+            f"`🆔{_id}` `qty:{_qty}` "
+            f"`entry:{_entry:.{d}f}` `tp_target:{_tp_target:.{d}f}` `tp_exec:{_exec_close:.{d}f}` "
+            f"`spread:{_spread:.{d}f}` `drift:{_drift:.{d}f}`   `open: {self.s.OPEN_TRADES - 1}`  `total: {self.s.TOTAL_TRADES}`"
+        )
+        embed = [{'value': new_msg, 'type': "text", 'inline': False, "title": ""}]
+        color = "#00FF00"
+
+        # For backtests you might not want extra spam, but this mirrors your entry logging pattern.
+        if self.s.setting_strategy_mode is Setting.MODE_TEST:
+            stamp.success(new_msg)
+            self.s.post_discord_embed([embed, color, ""])
+            return [order, order_sl, order_tp]
+
+        stamp.success(new_msg)
+        self.s.post_discord_embed([embed, color, ""])
+
+        return [order, order_sl, order_tp]
+    
+    @final
+    def on_bracket_close_sl(self, trade_orders:list = None):
+
+        """
+        Callback used by live runners when an SL is hit.
+
+        Base/backtest behaviour:
+            - simply returns the orders unchanged (so the engine uses candle-derived prices)
+
+        Live behaviour (MT5 runner):
+            - fetch the latest tick
+            - choose a realistic executable close price for the SL leg
+            - update order_sl['price'] (and optionally its time)
+            - keep everything else consistent so internal PnL uses the corrected exit
+        """
+
+        # ---- recieving order details see basestrategy lists for order column detaials ----
+        if trade_orders is None:
+            log.error("No trade order information received")
+            self.s.post_discord_message("No trade order information received")
+            return trade_orders
+
+        order, order_sl, order_tp = trade_orders
+
+        _id        = order.get('trade_id', None)
+        _qty       = order.get('qty', None)
+        _side      = order.get('side', None)          # open side: "buy" or "sell"
+        _entry     = float(order.get('price', 0.0))
+        _sl_target = float(order_sl.get('price', 0.0))
+
+        # ---- using active tick data for close ----
+        tick = mt5.symbol_info_tick(self.s.MARKET_SYMBOL)
+        if tick is None:
+            log.error("❌Tick unavailable (symbol_info_tick returned None)")
+            self.s.post_discord_message("❌Tick unavailable (symbol_info_tick returned None)")
+            return trade_orders
+
+        info = mt5.symbol_info(self.s.MARKET_SYMBOL)
+
+        # NOTE:
+        # - digits controls display precision for logs (and can be used for rounding if desired).
+        # - if symbol_info is unavailable, fall back to 2dp so discord logs don’t explode.
+        d = getattr(info, "digits", None)
+        if d is None:
+            log.warning("❌no symbol info digit data, defauling to 2.d.p")
+            self.s.post_discord_message("❌no symbol info digit data, defauling to 2.d.p")
+            d = 2
+
+        _bid = float(tick.bid)
+        _ask = float(tick.ask)
+        _spread = float(_ask - _bid)
+
+        # NOTE:
+        # When SL is hit, the *close* is the opposite side of the original position:
+        # - If the position is a BUY (long), you close by SELLing -> executable at BID.
+        # - If the position is a SELL (short), you close by BUYing -> executable at ASK.
+        #
+        # Since this is an SL hit, PnL should be negative.
+        if _side == "buy":
+            _exec_close = _bid
+            _close_symbol = "🔽"
+            _pnl = float(_exec_close - _entry)        # long loss => negative
+            _drift = float( _exec_close - _sl_target) # negative = loss
+        else:
+            _exec_close = _ask
+            _close_symbol = "🔼"
+            _pnl = float(_entry - _exec_close)         # short loss => negative
+            _drift = float( _sl_target - _exec_close)  # negative = loss
+
+        # ---- update the SL order ticket used by internal accounting ----
+        # We want your later logic to use order_sl['price'] as the exit price, so overwrite it here.
+        order_sl['price'] = _exec_close
+
+        # OPTIONAL:
+        # If you want the closed order stamps to reflect "now", you can set these here,
+        # but only do it if your calling code expects it (your loop already sets entry_time later).
+        #
+        # order_sl['entry_time'] = datetime.now()  # not recommended unless you standardize timezones
+
+        # ---- logging (optional but consistent with your other callbacks) ----
+        new_msg = (
+            f"`🛑Sl hit`  `{_close_symbol}Close`   `{self.s.MODE_SYMBOL[self.s.setting_strategy_mode] + self.s.MODE_TEXT[self.s.setting_strategy_mode]}`  `🟥PNL:{self.s.TICK_CURRENCY}{_pnl:.{2}f}` "
+            f"`🆔{_id}` `qty:{_qty}` "
+            f"`entry:{_entry:.{d}f}` `sl_target:{_sl_target:.{d}f}` `sl_exec:{_exec_close:.{d}f}` "
+            f"`spread:{_spread:.{d}f}` `drift:{_drift:.{d}f}`   `open: {self.s.OPEN_TRADES - 1}`  `total: {self.s.TOTAL_TRADES}`"
+        )
+        embed = [{'value': new_msg, 'type': "text", 'inline': False, "title": ""}]
+        color = "#FF0000"
+
+        # For backtests you might not want extra spam, but this mirrors your entry logging pattern.
+        if self.s.setting_strategy_mode is Setting.MODE_TEST:
+            stamp.success(new_msg)
+            self.s.post_discord_embed([embed, color, ""])
+            return [order, order_sl, order_tp]
+
+        stamp.success(new_msg)
+        self.s.post_discord_embed([embed, color, ""])
+
+        return [order, order_sl, order_tp]
+
+    @final
+    def tp_sl_conditions(self, i, order_side, order_tp, order_sl):
+
+        tick = mt5.symbol_info_tick(self.s.MARKET_SYMBOL)
+        if tick is None:
+            log.error("❌Tick unavailable (symbol_info_tick returned None, None)")
+            self.s.post_discord_message("❌Tick unavailable (symbol_info_tick returned None, None)")
+            return False, False
+
+        bid = float(tick.bid)
+        ask = float(tick.ask)
+
+        if order_side == "buy":
+            tp_condition = bid >= float(order_tp["price"])
+            sl_condition = bid <= float(order_sl["price"])
+        else:
+            tp_condition = ask <= float(order_tp["price"])
+            sl_condition = ask >= float(order_sl["price"])
+
+        return tp_condition, sl_condition
+        
 class MT5_live(Strategy):
 
     def __init__(self, strategy_instance: Strategy, symbol_str = "US100.cash", timeframe = mt5.TIMEFRAME_M5, candle_buffer = 500, poll_interval = 5, test_mode = True, **kwargs):
         
-
         # ----- Runner params -----
         self.setting_password = str(os.getenv('MT5_BOT_PASSWORD', '123'))  # default password if not set in .env
         self._ask_password = threading.Event()
@@ -415,7 +702,6 @@ class MT5_live(Strategy):
         self._discord_attached.clear() #switch off
         self._bar_needs_closed = threading.Event()
         self._bar_needs_closed.clear()
-        self.bot = None # discord bot instance
 
         # Console listen thread for stop command
         self.___console_listener = threading.Thread(target=self._console_ear, daemon=True)
@@ -430,42 +716,37 @@ class MT5_live(Strategy):
         # ----- ENSURE MT5 LOGIN -----
         mt5_login()
 
-        self.wrapper = _mt5Strategy(strategy_instance,  
-                                    symbol_info=mt5_load_symbol(symbol_str)  
-                                    )
-        
-        
-        self.wrapper.s.setting_strategy_mode = Setting.MODE_TEST if test_mode else Setting.MODE_LIVE
-        self.wrapper.s.TIME_INTERVAL = timeframe 
-        self.wrapper.s.TIME_INTERVAL_STR = MT5_TIMEFRAMES.get(self.wrapper.s.TIME_INTERVAL, "unknown")
-        self.wrapper.s.CANDLE_BUFFER = candle_buffer
-        self.wrapper.s.POLL_INTERVAL = poll_interval
-        self.wrapper.s.TIME_START = datetime.now(ZoneInfo("Europe/London"))
-        self.wrapper.s.TIME_ELAPSED = None
-        self.wrapper.s.TIME_WORK_DAYS = None
-        self.wrapper.s.DEVIATION = 10
-        self.wrapper.s.setting_listen_time = self.setting_listen_time
+        # ----- INITIALIZE WRAPPER -----
+        self.w = _mt5Strategy(strategy_instance, symbol_info=mt5_load_symbol(symbol_str))
+        self.s = self.w.s # strategy instance
+                                    
+        self.s.setting_strategy_mode = Setting.MODE_TEST if test_mode else Setting.MODE_LIVE
+        self.s.TIME_INTERVAL = timeframe 
+        self.s.TIME_INTERVAL_STR = MT5_TIMEFRAMES.get(self.s.TIME_INTERVAL, "unknown")
+        self.s.CANDLE_BUFFER = candle_buffer
+        self.s.POLL_INTERVAL = poll_interval
+        self.s.TIME_START = datetime.now(ZoneInfo("Europe/London"))
+        self.s.TIME_ELAPSED = None
+        self.s.TIME_WORK_DAYS = None
+        self.s.DEVIATION = 10
+        self.s.setting_listen_time = self.setting_listen_time
 
-        self.s = self.wrapper.s  # shortcut to strategy instance
-        self.wrapper.s.df = self._mt5_fetch_latest(2) # give intial data
+        self.s.df = self._mt5_fetch_latest(2) # give intial data
          
         
-     
-    
-
     # ------ UNIQUE MT5 LIVE METHODS ------
 
     def _mt5_fetch_latest(self, candles: int=1) -> pd.DataFrame:
 
         # ----- RETRIEVE DATA -----
         try:
-            rates = mt5.copy_rates_from_pos(self.wrapper.s.MARKET_SYMBOL, self.wrapper.s.TIME_INTERVAL, 0, candles)
+            rates = mt5.copy_rates_from_pos(self.s.MARKET_SYMBOL, self.s.TIME_INTERVAL, 0, candles)
         except Exception as e:
-            log.error(f"❌ MT5 download error {self.wrapper.s.MARKET_SYMBOL}: {e}")
+            log.error(f"❌ MT5 download error {self.s.MARKET_SYMBOL}: {e}")
             return pd.DataFrame()
 
         # ----- FORMAT DATA -----
-        df= _mt5_format_data(rates, self.wrapper.s.DATA_TZ)
+        df= _mt5_format_data(rates, self.s.DATA_TZ)
 
         return df
 
@@ -496,7 +777,7 @@ class MT5_live(Strategy):
     def _check_new_bar(self):
 
         """Check if a new bar has formed and reset flag when it does."""
-        latest_candle_time = self.wrapper.s.df.index[-1]  # current bar open time
+        latest_candle_time = self.s.df.index[-1]  # current bar open time
 
         # intialise this variable
         if not hasattr(self, "_last_candle_time"):
@@ -511,51 +792,51 @@ class MT5_live(Strategy):
 
     def mt5_stream(self):
 
-        
         # ----- udpate date -----
-        self.wrapper.s.df = self._mt5_fetch_latest(self.wrapper.s.CANDLE_BUFFER)  # initial fetch to set up    
-        self.wrapper.s._update_data_arrays()
+        self.s.df = self._mt5_fetch_latest(self.s.CANDLE_BUFFER)  # initial fetch to set up    
+        self.s._update_data_arrays()
         
         # ----- is discord bot connected? -----
         if self._discord_attached.is_set() is False:
             stamp.warning("🚧 No Discord bot attached, proceeding without it.")
         else:   
-            self.wrapper.discord_bot = self.bot
+            # pass to strategy
+            self.s.DISCORD_BOT = self.discord_bot
 
         # ----- print input params -----
         label_width = 18 
         print_boxed_title("INPUT PARAMS")
-        for key, value in self.wrapper.s.INPUT_PARAMS.items():
+        for key, value in self.s.INPUT_PARAMS.items():
             pront.info(f"{key + ':':<{label_width}} {value}")
 
 
         try:
             while self._running.is_set():
 
-                next_time = time.time()+ self.wrapper.s.POLL_INTERVAL
+                next_time = time.time()+ self.s.POLL_INTERVAL
                 
                 # ----- LOOP LOGIC -----
-                stamp.info(f"🔄 datetime: {self.wrapper.s.df.index[-1].strftime('%H:%M:%S')}| close: {self.wrapper.s.df['close'].iloc[-1]}| Open trades: {self.wrapper.s.OPEN_TRADES}")
+                stamp.info(f"🔄 datetime: {self.s.df.index[-1].strftime('%H:%M:%S')}| close: {self.s.df['close'].iloc[-1]}| Open trades: {self.s.OPEN_TRADES} | Total trades: {self.s.TOTAL_TRADES}")
                 
-                self.wrapper.s.loop_update(-1)
-                self.wrapper.s.df = self._mt5_fetch_latest(self.wrapper.s.CANDLE_BUFFER)  # fetch latest data
-                self.wrapper.s._update_data_arrays()
+                self.s.loop_update(-1)
+                self.s.df = self._mt5_fetch_latest(self.s.CANDLE_BUFFER)  # fetch latest data
+                self.s._update_data_arrays()
 
                 # buy logic (one trade per bar)
                 if not self._bar_needs_closed.is_set():
-                    if self.wrapper.s.buy_condition(-1):
-                        self.wrapper.s.buy_action(-1)
+                    if self.s.buy_condition(-1):
+                        self.s.buy_action(-1)
                         self._bar_needs_closed.set()
                         pass
 
                 if not self._bar_needs_closed.is_set():
-                    if self.wrapper.s.sell_condition(-1):
-                        self.wrapper.s.sell_action(-1)
+                    if self.s.sell_condition(-1):
+                        self.s.sell_action(-1)
                         self._bar_needs_closed.set()
                         pass
                 
                 self._check_new_bar() 
-                self.wrapper.s._check_market_sltp(-1)
+                self.s._check_market_sltp(-1)
 
                 # ----- END LOOP LOGIC -----
                 sleep_time = max(0, next_time - time.time())
@@ -563,10 +844,10 @@ class MT5_live(Strategy):
                     time.sleep(min(self.setting_listen_time,sleep_time))
                     sleep_time = next_time- time.time()
 
-                   
         finally:
             #mt5.shutdown()
             stamp.success("🛑 Stopping MT5 live data stream...")
+            self.s.post_discord_message("🛑 Stopping MT5 live data stream...")
     
 
 

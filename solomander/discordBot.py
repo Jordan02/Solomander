@@ -16,21 +16,21 @@ from openpyxl import Workbook
 
 try: 
     from .logger import log, stamp, pront
-    from .mt5 import MT5_live
+    
     from .baseStrategy import Strategy
     from .utils import random_color
 except ImportError: 
     #for running as main script
     from logger import log, stamp, pront
-    from mt5 import MT5_live
     from baseStrategy import Strategy
     from utils import random_color
   
 
 class DiscordBot:
-    def __init__(self, mt5_live: MT5_live = None):
+    def __init__(self, mt5_live = None, main_channel_id = 1426314357788246036):
         
-        self.main_channel_id = 1426314357788246036  # default main channel
+        
+        self.main_channel_id = main_channel_id  # default main channel
         self.live_bot = mt5_live
    
         self.am_ready = threading.Event()
@@ -41,10 +41,8 @@ class DiscordBot:
         # link to live bot if provided
         if self.live_bot:
             self.live_bot._discord_attached.set()  
-            self._live_bot_attached.set()
-
             self.live_bot.discord_bot = self
-            self.live_bot._discord_attached.set()
+            self._live_bot_attached.set()
         
         
         load_dotenv()
@@ -110,7 +108,7 @@ class DiscordBot:
 
             if self._live_bot_attached.is_set():
                 
-                bot = self.live_bot.wrapper.s
+                bot = self.live_bot.s.s
 
                 embed,files = self._embed(bot.discord_stats())
                 
@@ -129,7 +127,7 @@ class DiscordBot:
 
             if self._live_bot_attached.is_set():
 
-                embed, files = self._embed(self.live_bot.wrapper.s.discord_market())
+                embed, files = self._embed(self.live_bot.s.s.discord_market())
                 embed.set_footer(text=f"For {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
 
                 await ctx.send(embed=embed, files=files)
@@ -281,7 +279,7 @@ class DiscordBot:
         embed_data = to_embed[0]
         color = int(to_embed[1].replace("#", ""), 16)
         title = to_embed[2]
-        embed = discord.Embed(title=title,color=color,timestamp=datetime.now(timezone.utc))
+        embed = discord.Embed(title=title,color=color)
         files = []
 
         for i, section in enumerate(embed_data):

@@ -45,9 +45,28 @@ class Setting(Enum):
     MODE_LIVE = auto()
     MODE_TEST = auto()
     MODE_NONE = auto()  
+
+
     
 
 class Strategy:
+
+    MODE_SYMBOL = {Setting.MODE_BACKTEST: "🟣", 
+              Setting.MODE_LIVE: "🔵❗", 
+              Setting.MODE_TEST: "🟡", 
+              Setting.MODE_NONE: "⚫"}
+
+    MODE_TEXT = {Setting.MODE_BACKTEST: "BACKTEST", 
+                Setting.MODE_LIVE: "LIVE", 
+                Setting.MODE_TEST: "TEST", 
+                Setting.MODE_NONE: "UNKOWN"}
+
+    MODE_COLOR = {Setting.MODE_BACKTEST: "#886ce4", 
+                Setting.MODE_LIVE: "#0046ff", 
+                Setting.MODE_TEST: "#f1c40f", 
+                Setting.MODE_NONE: "#2e2e2e"}
+    
+
 
     def __init__(self, **kwargs):
         
@@ -212,6 +231,7 @@ class Strategy:
         self.POLL_INTERVAL = None
         self.CANDLE_BUFFER = None
         self.DEVIATION = None
+        self.DISCORD_BOT = None
 
         self.STRATEGY_NAME = self.__class__.__name__
 
@@ -250,17 +270,66 @@ class Strategy:
 
         return
     
-    # --- hooks and callback methods for runners ---
+    # ===== hooks and callback methods for runners - rebind in runners =====
 
-    def on_sell_bracket(self, i):
-        return
+    def on_sell_bracket(self, trade_orders:list = None):
+        """ 
+         Logic added within runners. These should modify trade orders, and return them, based actual live (or other) data
+        to allow accurate internal trade tracking.
+
+        trade orders [market order, sl_order, tp order]
+        """
+        return trade_orders
     
-    def on_buy_bracket(self, i):
-        return
+    def on_buy_bracket(self, trade_orders:list = None):
+        """ 
+        Logic added within runners. These should modify trade orders, and return them, based actual live (or other) data
+        to allow accurate internal trade tracking.
+
+        trade orders [market order, sl_order, tp order]
+        """
+        return trade_orders
     
-    def on_bracket_close(self, i):
-        return
+    def on_bracket_close_tp(self, trade_orders:list = None):
+
+        """
+        Logic added within runners. These should modify closing orders, and return them, based on actual live (or other) data
+        to allow acc
+        urate internal trade tracking.
+
+        trade orders [market order, sl_order, tp order]
+        """
+        return trade_orders
     
+
+    def on_bracket_close_sl(self, trade_orders:list = None):
+
+        """
+        Logic added within runners. These should modify closing orders, and return them, based on actual live (or other) data
+        to allow acc
+        urate internal trade tracking.
+
+        trade orders [market order, sl_order, tp order]
+        """
+        return trade_orders
+
+
+    def tp_sl_conditions(self, i, order_side, order_tp, order_sl):
+
+        """
+        logic for checking tp and sl conditions, defaults to backtesting conditions,"
+        override for live trading
+        """
+
+        if order_side == "buy":
+            tp_condition = self.data['close'][i] >= order_tp['price']
+            sl_condition = self.data['close'][i] <= order_sl['price']
+        else:
+            tp_condition = self.data['close'][i] <= order_tp['price']
+            sl_condition = self.data['close'][i] >= order_sl['price']
+        
+        return tp_condition, sl_condition
+
 
     # ====== FUNCTIONS ======
     
@@ -394,6 +463,7 @@ class Strategy:
         # ---- CHECKS ----
         if self._check_qty(qty) == 0:
             return
+        error_msg = None
         
          # ---- calculate entry, sl and tp prices with slippage and rounding ----
         _entry_price = self._round_to_tick(self.data['open'][i] - self._slippage(self.setting_slippage_entry), self._setting_rm_sell)
@@ -407,38 +477,46 @@ class Strategy:
                 _tp_price = self._round_to_tick(tp_price + self._slippage(self.setting_slippage_tp), self._setting_rm_sell_tp)
         except Exception as e:
             log.error(f"❌ Error calculating SL/TP prices: {e}")
+            self.post_discord_message(f"❌ Error calculating SL/TP prices: {e}")
 
-          # ---- market order ----
-        self.l_orders_open.append({ 'trade_id': self.ORDER_ID,
-                                    'entry_time': self.data['datetime'][i], 
-                                    'side': 'sell', 
-                                    'price': _entry_price, 
-                                    'qty': qty, 
-                                    'filled': 0,
-                                    'type': 'market', 
-                                    'comments': comments})
+        # ---- market order ----
+        market_order = {    'trade_id': self.ORDER_ID,
+                            'entry_time': self.data['datetime'][i], 
+                            'side': 'sell', 
+                            'price': _entry_price, 
+                            'qty': qty, 
+                            'filled': 0,
+                            'type': 'market', 
+                            'comments': comments}
         
         # ---- SL ----
-        self.l_orders_open.append({ 'trade_id': self.ORDER_ID,
-                                    'entry_time': self.data['datetime'][i], 
-                                    'side': "buy", 
-                                    'price': _sl_price, 
-                                    'qty': qty, 
-                                    'filled': 0,
-                                    'type': 'sl', 
-                                    'comments': comments})
+        sl_order = {        'trade_id': self.ORDER_ID,
+                            'entry_time': self.data['datetime'][i], 
+                            'side': "buy", 
+                            'price': _sl_price, 
+                            'qty': qty, 
+                            'filled': 0,
+                            'type': 'sl', 
+                            'comments': comments}
         
         # ---- TP ----
-        self.l_orders_open.append({ 'trade_id': self.ORDER_ID,
-                                    'entry_time': self.data['datetime'][i], 
-                                    'side': "buy", 
-                                    'price': _tp_price, 
-                                    'qty': qty, 
-                                    'filled': 0,
-                                    'type': 'tp', 
-                                    'comments': comments})
+        tp_order = {        'trade_id': self.ORDER_ID,
+                            'entry_time': self.data['datetime'][i], 
+                            'side': "buy", 
+                            'price': _tp_price, 
+                            'qty': qty, 
+                            'filled': 0,
+                            'type': 'tp', 
+                            'comments': comments}
         
-        # ---- update counters ----
+        # ---- callback function for runners ---
+        market,sl,tp = self.on_sell_bracket([market_order, sl_order, tp_order], error_msg)
+        
+        # ---- update counters and lists ----
+        self.l_orders_open.append(market)
+        self.l_orders_open.append(sl)
+        self.l_orders_open.append(tp)
+      
         self.ORDER_ID += 1
         self.TOTAL_ORDERS +=3
         self.OPEN_ORDERS +=3
@@ -446,6 +524,7 @@ class Strategy:
         self.TOTAL_TRADES +=1
         self.OPEN_TRADES +=1
         self.TOTAL_SHORTS +=1
+
         
         return
 
@@ -454,6 +533,7 @@ class Strategy:
         # ---- CHECKS ----
         if self._check_qty(qty) == 0:
             return
+
         # ---- calculate entry, sl and tp prices with slippage and rounding ----
         _entry_price = self._round_to_tick(self.data['open'][i] + self._slippage(self.setting_slippage_entry), self._setting_rm_buy)
 
@@ -466,38 +546,47 @@ class Strategy:
                 _tp_price = self._round_to_tick(tp_price - self._slippage(self.setting_slippage_tp), self._setting_rm_buy_tp)
         except Exception as e:
             log.error(f"❌ Error calculating SL/TP prices: {e}")
+            self.post_discord_message(f"❌ Error calculating SL/TP prices: {e}")
 
-          # ---- market order ----
-        self.l_orders_open.append({ 'trade_id': self.ORDER_ID,
+        # ---- market order ----
+        market_order = { 'trade_id': self.ORDER_ID,
                                     'entry_time': self.data['datetime'][i], 
                                     'side': 'buy', 
                                     'price': _entry_price, 
                                     'qty': qty, 
                                     'filled': 0,
                                     'type': 'market', 
-                                    'comments': comments})
+                                    'comments': comments}
         
         # ---- SL ----
-        self.l_orders_open.append({ 'trade_id': self.ORDER_ID,
+        sl_order = { 'trade_id': self.ORDER_ID,
                                     'entry_time': self.data['datetime'][i], 
                                     'side': "sell", 
                                     'price': _sl_price, 
                                     'qty': qty, 
                                     'filled': 0,
                                     'type': 'sl', 
-                                    'comments': comments})
+                                    'comments': comments}
         
         # ---- TP ----
-        self.l_orders_open.append({ 'trade_id': self.ORDER_ID,
+        tp_order = { 'trade_id': self.ORDER_ID,
                                     'entry_time': self.data['datetime'][i], 
                                     'side': "sell", 
                                     'price': _tp_price, 
                                     'qty': qty, 
                                     'filled': 0,
                                     'type': 'tp', 
-                                    'comments': comments})
+                                    'comments': comments}
         
-        # ---- update counters ----
+    
+        # ---- callback function for runners ---
+        market, sl, tp = self.on_buy_bracket([market_order, sl_order, tp_order])
+
+        # ---- update counters and lists ----
+        self.l_orders_open.append(market)
+        self.l_orders_open.append(sl)
+        self.l_orders_open.append(tp)
+
         self.ORDER_ID += 1
         self.TOTAL_ORDERS +=3
         self.OPEN_ORDERS +=3
@@ -505,7 +594,7 @@ class Strategy:
         self.TOTAL_TRADES +=1
         self.OPEN_TRADES +=1
         self.TOTAL_LONGS +=1
-        
+
         return
     
     def _check_market_sltp(self, i):
@@ -514,7 +603,6 @@ class Strategy:
         Check for stop loss and take profit conditions for open market orders
         
         """
-
         # open market orders
         order_market = [o for o in self.l_orders_open if o['type'] == 'market']
 
@@ -528,25 +616,26 @@ class Strategy:
             qty = order['qty']
 
             ## -------- LONG/SHORT TP CONDITION -------
-            # = (exit price - entry price) * qty * leverage - fee * qty
-            if order_side == "buy":
-                tp_condition = self.data['high'][i] >= order_tp['price']
-                sl_condition = self.data['low'][i] <= order_sl['price']
-                tp_pnl = (order_tp['price'] - order['price']) * qty*self.POINT_LEVERAGE
-                sl_pnl = (order_sl['price'] - order['price']) * qty*self.POINT_LEVERAGE
-            else:
-                tp_condition = self.data['low'][i] <= order_tp['price']
-                sl_condition = self.data['high'][i] >= order_sl['price']
-                tp_pnl = (order['price'] - order_tp['price']) * qty*self.POINT_LEVERAGE
-                sl_pnl = (order['price'] - order_sl['price']) * qty*self.POINT_LEVERAGE
             
-            
+            tp_condition, sl_condition = self.tp_sl_conditions(i,order_side,order_tp,order_sl)
+    
                
             ## -------- TL HIT --------
             if tp_condition: 
-        
+                
+                # -------- callback order modification for live runners --------
+                market,sl,tp = self.on_bracket_close_tp([order,order_sl,order_tp])
+
+                if order_side == "buy":
+                    tp_pnl = (tp['price'] - market['price']) * qty*self.POINT_LEVERAGE
+                    sl_pnl = (sl['price'] - market['price']) * qty*self.POINT_LEVERAGE
+                else:
+                    tp_pnl = (market['price'] - tp['price']) * qty*self.POINT_LEVERAGE
+                    sl_pnl = (market['price'] - sl['price']) * qty*self.POINT_LEVERAGE
+
+
                 # update signals and counters
-                average_price = (order['price'] + order_tp['price'])/2
+                average_price = (market['price'] + tp['price'])/2
                 fee = self._fee(qty,average_price)
                 spread = self._spread(qty)
                 
@@ -573,49 +662,63 @@ class Strategy:
                 self.update_metrics() 
 
                 # add trade order record
-                self.l_trades.append({  'trade_id': trade_id,
-                                        'entry_time': order['entry_time'],
+                tp_hit_trade_close = {  'trade_id': trade_id,
+                                        'entry_time': market['entry_time'],
                                         'exit_time': self.data['datetime'][i], 
-                                        'entry_price': order['price'], 
-                                        'exit_price': order_tp['price'], 
+                                        'entry_price': market['price'], 
+                                        'exit_price': tp['price'], 
                                         'side': order_side, 
                                         'qty': qty, 
                                         'filled': qty, 
-                                        'sl': order_sl['price'], 
-                                        'tp': order_tp['price'], 
+                                        'sl': sl['price'], 
+                                        'tp': tp['price'], 
                                         'raw_pnl': tp_pnl, 
                                         'fee': fee, 
                                         'spread': spread, 
                                         'pnl': self.LAST_PNL,
                                         'margin': self.MARGIN,
                                         'return': self.LAST_RETURN,
-                                        'market_change': (order_tp['price'] - order['price'])/order['price'],
-                                        'comments': ''})
+                                        'market_change': (tp['price'] - market['price'])/market['price'],
+                                        'comments': 'tp_hit' }
+                
+
+                self.l_trades.append(tp_hit_trade_close)
                 
                 # remove from open_orders
-                self.l_orders_open.remove(order)
-                self.l_orders_open.remove(order_sl)
-                self.l_orders_open.remove(order_tp)
+                self.l_orders_open.remove(market)
+                self.l_orders_open.remove(sl)
+                self.l_orders_open.remove(tp)
 
                 # add to closed_orders
-                order['filled'] = 1
-                order_sl['comments'] = 'cancelled'
-                order_sl['entry_time'] = self.data['datetime'][i]
+                market['filled'] = 1
+                sl['comments'] = 'cancelled'
+                sl['entry_time'] = self.data['datetime'][i]
                 
-                order_tp['filled'] = 1
-                order_tp['entry_time'] = self.data['datetime'][i]
+                tp['filled'] = 1
+                tp['entry_time'] = self.data['datetime'][i]
                 
-                self.l_orders_closed.append(order)
-                self.l_orders_closed.append(order_sl)
-                self.l_orders_closed.append(order_tp)
+                self.l_orders_closed.append(market)
+                self.l_orders_closed.append(sl)
+                self.l_orders_closed.append(tp)
+
                 continue
                 
 
             # -------- SL HIT --------
             if sl_condition:
 
+                # -------- callback order modification for live runners --------
+                market,sl,tp = self.on_bracket_close_sl([order,order_sl,order_tp])
+
+                if order_side == "buy":
+                    tp_pnl = (tp['price'] - market['price']) * qty*self.POINT_LEVERAGE
+                    sl_pnl = (sl['price'] - market['price']) * qty*self.POINT_LEVERAGE
+                else:
+                    tp_pnl = (market['price'] - tp['price']) * qty*self.POINT_LEVERAGE
+                    sl_pnl = (market['price'] - sl['price']) * qty*self.POINT_LEVERAGE
+
                 # update signals and counters
-                average_price = (order['price'] + order_sl['price'])/2
+                average_price = (market['price'] + sl['price'])/2
                 fee = self._fee(qty,average_price)
                 spread = self._spread(qty)
 
@@ -635,74 +738,63 @@ class Strategy:
                 self.update_metrics() 
 
                 # add trade order record
-                self.l_trades.append({  'trade_id': trade_id,
-                                        'entry_time': order['entry_time'],
+                sl_hit_trade_close = {  'trade_id': trade_id,
+                                        'entry_time': market['entry_time'],
                                         'exit_time': self.data['datetime'][i], 
-                                        'entry_price': order['price'], 
-                                        'exit_price': order_sl['price'], 
+                                        'entry_price': market['price'], 
+                                        'exit_price': sl['price'], 
                                         'side': order_side, 
                                         'qty': qty, 
                                         'filled': qty, 
-                                        'sl': order_sl['price'], 
-                                        'tp': order_tp['price'], 
+                                        'sl': sl['price'], 
+                                        'tp': tp['price'], 
                                         'raw_pnl': sl_pnl,
                                         'fee': fee,
                                         'spread': spread,
                                         'pnl': self.LAST_PNL,
                                         'margin': self.MARGIN,
                                         'return': self.LAST_RETURN,
-                                        'market_change': (order_sl['price'] - order['price'])/order['price'],
-                                        'comments': ''})
+                                        'market_change': (sl['price'] - market['price'])/market['price'],
+                                        'comments': 'sl_hit'}
+                
+                self.l_trades.append(sl_hit_trade_close)
                         
                 #move remove from open_orders
-                self.l_orders_open.remove(order)
-                self.l_orders_open.remove(order_sl)
-                self.l_orders_open.remove(order_tp)
+                self.l_orders_open.remove(market)
+                self.l_orders_open.remove(sl)
+                self.l_orders_open.remove(tp)
 
                 # add to closed_orders
-                order['filled'] = 1
+                market['filled'] = 1
             
-                order_tp['comments'] = 'cancelled'
-                order_tp['entry_time'] = self.data['datetime'][i]
+                tp['comments'] = 'cancelled'
+                tp['entry_time'] = self.data['datetime'][i]
                 
-                order_sl['filled'] = 1
-                order_sl['entry_time'] = self.data['datetime'][i]
+                sl['filled'] = 1
+                sl['entry_time'] = self.data['datetime'][i]
 
-                self.l_orders_closed.append(order)
-                self.l_orders_closed.append(order_sl)
-                self.l_orders_closed.append(order_tp)
+                self.l_orders_closed.append(market)
+                self.l_orders_closed.append(sl)
+                self.l_orders_closed.append(tp)
+                
                 continue
 
-    
-    # ====== Display functions ======
+            
+
+    # ====== Discord Formatting Display functions ======
 
     def discord_stats(self):
         """Shows currents stats"""
         
         title = "⚖️ Strategy Metrics"
+        mode = self.MODE_SYMBOL[Setting.setting_strategy_mode] + self.MODE_TEXT[Setting.setting_strategy_mode]
+        color = self.MODE_COLOR[Setting.setting_strategy_mode]
 
-        if self.setting_strategy_mode == Setting.MODE_TEST:
-            mode = "🟡 TEST"
-            color = "#E5FF00"
+        if self.setting_strategy_mode == Setting.MODE_TEST or self.setting_strategy_mode == Setting.MODE_LIVE:
             self.TIME_END = datetime.now(ZoneInfo("Europe/London"))
             self.TIME_ELAPSED = self.TIME_END - self.TIME_START
             self.TIME_WORK_DAYS = np.busday_count(self.TIME_START.date(),self.TIME_END.date())
             
-
-        elif self.setting_strategy_mode == Setting.MODE_LIVE:
-            mode = "🟢 LIVE"
-            color = "#16c60c"
-            self.TIME_END = datetime.now(ZoneInfo("Europe/London"))
-            self.TIME_ELAPSED = self.TIME_END - self.TIME_START
-            self.TIME_WORK_DAYS = np.busday_count(self.TIME_START.date(),self.TIME_END.date())
-
-        elif self.setting_strategy_mode == Setting.MODE_BACKTEST:
-            mode = "🟣 BACKTEST"
-            color = "#886ce4"
-        else:
-            mode = "⚫ NONE"
-            color = "#2e2e2e"
-
         start_time_str = self.TIME_START.strftime("%d/%m/%y %H:%M %Z") if self.TIME_START is not None else "Unknown"
         end_time_str = self.TIME_END.strftime("%d/%m/%y %H:%M %Z") if self.TIME_END is not None else "Unknown"
         time_elapsed_str = str(self.TIME_ELAPSED).split('.')[0] if self.TIME_ELAPSED is not None else "Unknown"
@@ -808,21 +900,8 @@ class Strategy:
     def discord_settings(self):
 
         title = "⚙️ Strategy Settings"
-
-        if self.setting_strategy_mode == Setting.MODE_TEST:
-            mode = "🟡"
-            color = "#E5FF00"
-            
-        elif self.setting_strategy_mode == Setting.MODE_LIVE:
-            mode = "🟢"
-            color = "#16c60c"
-
-        elif self.setting_strategy_mode == Setting.MODE_BACKTEST:
-            mode = "🟣"
-            color = "#886ce4"
-        else:
-            mode = "⚫"
-            color = "#2e2e2e"
+        mode = self.MODE_SYMBOL[self.setting_strategy_mode]
+        color = self.MODE_COLOR[self.setting_strategy_mode]
 
         inputs = ""
         for key, value in self.INPUT_PARAMS.items():
@@ -883,26 +962,13 @@ class Strategy:
 
         title = "📝 Strategy Summary"
 
-        if self.setting_strategy_mode == Setting.MODE_TEST:
-            mode = "🟡 TEST"
-            color = "#E5FF00"
+        mode = self.MODE_SYMBOL[Setting.setting_strategy_mode] + self.MODE_TEXT[Setting.setting_strategy_mode]
+        color = self.MODE_COLOR[Setting.setting_strategy_mode]
+
+        if self.setting_strategy_mode == Setting.MODE_TEST or self.setting_strategy_mode == Setting.MODE_LIVE:
             self.TIME_END = datetime.now(ZoneInfo("Europe/London"))
             self.TIME_ELAPSED = self.TIME_END - self.TIME_START
             self.TIME_WORK_DAYS = np.busday_count(self.TIME_START.date(),self.TIME_END.date())
-
-        elif self.setting_strategy_mode == Setting.MODE_LIVE:
-            mode = "🟢 LIVE"
-            color = "#16c60c"
-            self.TIME_END = datetime.now(ZoneInfo("Europe/London"))
-            self.TIME_ELAPSED = self.TIME_END - self.TIME_START
-            self.TIME_WORK_DAYS = np.busday_count(self.TIME_START.date(),self.TIME_END.date())
-
-        elif self.setting_strategy_mode == Setting.MODE_BACKTEST:
-            mode = "🟣 BACKTEST"
-            color = "#886ce4"
-        else:
-            mode = "⚫ NONE"
-            color = "#2e2e2e"
 
         start_time_str = self.TIME_START.strftime("%d/%m/%y %H:%M %Z") if self.TIME_START is not None else "Unknown"
         end_time_str = self.TIME_END.strftime("%d/%m/%y %H:%M %Z") if self.TIME_END is not None else "Unknown"
@@ -925,7 +991,6 @@ class Strategy:
             f"Average Loss: `{self.AVERAGE_LOSS:.2f} {self.TICK_CURRENCY}`\n"
             f"Average Return: `{self.AVERAGE_RETURN*100:.2f}%`\n"
             
-
         )
 
         column2 = (
@@ -956,6 +1021,20 @@ class Strategy:
                 ]
 
         return [embed, color, title]
+
+
+    # ====== Post functions (if bot attached) ======
+    def post_discord_message(self, msg):
+        if self.DISCORD_BOT: 
+            self.DISCORD_BOT.post_message(msg)
+        else:
+            log.warning("No discord bot connected")
+
+    def post_discord_embed(self, embed):
+        if self.DISCORD_BOT: 
+            self.DISCORD_BOT.post_embed(embed)
+        else:
+            log.warning("No discord bot connected")
 
     # ====== INTERNAL FUNCTIONS ======
     @final

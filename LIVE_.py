@@ -29,6 +29,7 @@ TIME_FRAME = mt5.TIMEFRAME_M15
 CANDLE_BUFFER = 500
 POLL_TIME = 0.5  # seconds
 TEST_MODE = False
+DISCORD_CHANNEL = 1462789469630365877
 
 
 
@@ -219,7 +220,7 @@ mt5_bot = s.MT5_live(strategy,
 
 if DISCORD_BOT:
     matplotlib.use("Agg")  
-    bot = s.DiscordBot(mt5_bot)
+    bot = s.DiscordBot(mt5_bot, DISCORD_CHANNEL)
     bot.am_ready.wait()  #wait till bot is ready
    
     bot.post_message(f"Hello Jordan 😊 Solomander here!")
